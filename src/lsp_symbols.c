@@ -1,8 +1,25 @@
 #include "lsp_symbols.h"
+#include "lsp_symbol_span.h"
 #include "json.h"
 
 #include <stdlib.h>
 #include <string.h>
+
+static void emit_position(JsonBuilder *jb, const char *key, uint32_t line, uint32_t character) {
+    jb_key(jb, key);
+    jb_start_obj(jb);
+    jb_kv_int(jb, "line", (int)line);
+    jb_kv_int(jb, "character", (int)character);
+    jb_end_obj(jb);
+}
+
+static void emit_range(JsonBuilder *jb, const char *key, LspRange range) {
+    jb_key(jb, key);
+    jb_start_obj(jb);
+    emit_position(jb, "start", range.start.line, range.start.character);
+    emit_position(jb, "end", range.end.line, range.end.character);
+    jb_end_obj(jb);
+}
 
 static void emit_decl_symbol(JsonBuilder *jb, const LspDocument *doc, const SnDecl *d) {
     if (!d || !d->name) return;
@@ -25,40 +42,19 @@ static void emit_decl_symbol(JsonBuilder *jb, const LspDocument *doc, const SnDe
         default: break;
     }
 
-    LspRange r = lsp_span_to_range(doc, d->span.offset, d->span.len, d->span.line, d->span.col);
+    uint32_t range_off = 0, range_end = 0, sel_off = 0, sel_len = 0;
+    LspRange full;
+    LspRange selection;
+    lsp_decl_outline(doc, d, &range_off, &range_end, &sel_off, &sel_len);
+    full = lsp_span_to_range(doc, range_off, range_end > range_off ? range_end - range_off : 1, 0, 0);
+    selection = lsp_span_to_range(doc, sel_off, sel_len > 0 ? sel_len : 1, 0, 0);
 
     jb_start_obj(jb);
     jb_kv_str(jb, "name", d->name);
     jb_kv_int(jb, "kind", (int)sym_kind);
     if (detail[0]) jb_kv_str(jb, "detail", detail);
-
-    jb_key(jb, "range");
-    jb_start_obj(jb);
-    jb_key(jb, "start");
-    jb_start_obj(jb);
-    jb_kv_int(jb, "line", r.start.line);
-    jb_kv_int(jb, "character", r.start.character);
-    jb_end_obj(jb);
-    jb_key(jb, "end");
-    jb_start_obj(jb);
-    jb_kv_int(jb, "line", r.end.line);
-    jb_kv_int(jb, "character", r.end.character);
-    jb_end_obj(jb);
-    jb_end_obj(jb);
-
-    jb_key(jb, "selectionRange");
-    jb_start_obj(jb);
-    jb_key(jb, "start");
-    jb_start_obj(jb);
-    jb_kv_int(jb, "line", r.start.line);
-    jb_kv_int(jb, "character", r.start.character);
-    jb_end_obj(jb);
-    jb_key(jb, "end");
-    jb_start_obj(jb);
-    jb_kv_int(jb, "line", r.start.line);
-    jb_kv_int(jb, "character", r.start.character + (uint32_t)strlen(d->name));
-    jb_end_obj(jb);
-    jb_end_obj(jb);
+    emit_range(jb, "range", full);
+    emit_range(jb, "selectionRange", selection);
 
     // Children members
     bool has_children = (d->members.len > 0 || d->variants.len > 0);
@@ -93,40 +89,19 @@ char *lsp_document_symbols_query(LspAnalysisEngine *engine, const LspDocument *d
 
     // Package namespace symbol if any
     if (a->unit.package) {
-        LspRange pr = lsp_span_to_range(doc, a->unit.package_span.offset, a->unit.package_span.len, a->unit.package_span.line, a->unit.package_span.col);
+        uint32_t range_off = 0, range_end = 0, sel_off = 0, sel_len = 0;
+        LspRange full;
+        LspRange selection;
+        lsp_keyword_name_outline(doc, a->unit.package_span.offset, a->unit.package_span.len,
+                                 a->unit.package, &range_off, &range_end, &sel_off, &sel_len);
+        full = lsp_span_to_range(doc, range_off, range_end > range_off ? range_end - range_off : 1, 0, 0);
+        selection = lsp_span_to_range(doc, sel_off, sel_len > 0 ? sel_len : 1, 0, 0);
         jb_start_obj(&jb);
         jb_kv_str(&jb, "name", a->unit.package);
         jb_kv_int(&jb, "kind", (int)LSP_SYMBOL_PACKAGE);
         jb_kv_str(&jb, "detail", "package");
-
-        jb_key(&jb, "range");
-        jb_start_obj(&jb);
-        jb_key(&jb, "start");
-        jb_start_obj(&jb);
-        jb_kv_int(&jb, "line", pr.start.line);
-        jb_kv_int(&jb, "character", pr.start.character);
-        jb_end_obj(&jb);
-        jb_key(&jb, "end");
-        jb_start_obj(&jb);
-        jb_kv_int(&jb, "line", pr.end.line);
-        jb_kv_int(&jb, "character", pr.end.character);
-        jb_end_obj(&jb);
-        jb_end_obj(&jb);
-
-        jb_key(&jb, "selectionRange");
-        jb_start_obj(&jb);
-        jb_key(&jb, "start");
-        jb_start_obj(&jb);
-        jb_kv_int(&jb, "line", pr.start.line);
-        jb_kv_int(&jb, "character", pr.start.character);
-        jb_end_obj(&jb);
-        jb_key(&jb, "end");
-        jb_start_obj(&jb);
-        jb_kv_int(&jb, "line", pr.end.line);
-        jb_kv_int(&jb, "character", pr.end.character);
-        jb_end_obj(&jb);
-        jb_end_obj(&jb);
-
+        emit_range(&jb, "range", full);
+        emit_range(&jb, "selectionRange", selection);
         jb_end_obj(&jb);
     }
 

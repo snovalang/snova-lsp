@@ -22,6 +22,8 @@ launching the server manually.
 
 Snovalang sources use the `.snl` extension. Snovalang scripts use `.sns`. The server indexes and analyzes only those two extensions. `.snova`, `.java`, and every other extension are ignored.
 
+The project manifest is `mod.sns` (or `snova.sns`), not `mod.sno`. Document symbols keep each `selectionRange` inside its `range`, including fields and functions nested in a struct. Completion covers names in the open `.snl` or `.sns` file, members such as `Console.println`, and an autoimport edit for a symbol defined in another project file.
+
 ## Docstring Support
 The LSP server automatically parses documentation formatted as:
 ```snl

@@ -25,6 +25,12 @@
 #include <stdbool.h>
 #include <inttypes.h>
 
+/* mod.sns and snova.sns are manifests even though .sns is also a script extension. */
+static int document_is_manifest(const LspDocument *doc, const char *lang_id) {
+    if (lang_id && strcmp(lang_id, "snova-manifest") == 0) return 1;
+    return doc && doc->path && lsp_is_manifest_file(doc->path);
+}
+
 /* Emit diagnostics for a specific file path (may or may not be open in store).
  * When the document is open, line offsets are used for precise conversion.
  * For closed files, the compiler's 1-based line/col are converted directly. */
@@ -389,20 +395,9 @@ int main(int argc, char **argv) {
                 const char *text     = json_get_str(td, "text", "");
                 LspDocument *doc = lsp_docstore_open(&doc_store, uri, version, text, strlen(text));
                 if (doc) {
-                    /* Manifests are named files. Snovalang itself is only .snl and .sns. */
-                    bool is_manifest = (strcmp(lang_id, "snova-manifest") == 0);
-                    bool is_source = doc->path && lsp_is_snovalang_source(doc->path);
-                    if (!is_manifest && doc->path) {
-                        const char *base = strrchr(doc->path, '/');
-                        if (!base) base = strrchr(doc->path, '\\');
-                        base = base ? base + 1 : doc->path;
-                        is_manifest = (strcmp(base, "mod.sno") == 0 ||
-                                       strcmp(base, "snova.mod") == 0 ||
-                                       strcmp(base, "snova.sno") == 0);
-                    }
-                    if (is_source) {
-                        is_manifest = false;
-                    }
+                    /* Manifests are mod.sns / snova.sns. Other .snl and .sns files are Snovalang. */
+                    bool is_manifest = document_is_manifest(doc, lang_id);
+                    bool is_source = doc->path && lsp_is_snovalang_source(doc->path) && !is_manifest;
                     if (is_manifest || is_source) {
                         LspDocAnalysis *a = is_manifest
                             ? lsp_engine_analyze_manifest(&engine, doc)
@@ -426,19 +421,8 @@ int main(int argc, char **argv) {
                 const char *text = json_get_str(last_change, "text", "");
                 LspDocument *doc = lsp_docstore_update(&doc_store, uri, version, text, strlen(text));
                 if (doc) {
-                    bool is_manifest = false;
-                    bool is_source = doc->path && lsp_is_snovalang_source(doc->path);
-                    if (doc->path) {
-                        const char *base = strrchr(doc->path, '/');
-                        if (!base) base = strrchr(doc->path, '\\');
-                        base = base ? base + 1 : doc->path;
-                        is_manifest = (strcmp(base, "mod.sno") == 0 ||
-                                       strcmp(base, "snova.mod") == 0 ||
-                                       strcmp(base, "snova.sno") == 0);
-                    }
-                    if (is_source) {
-                        is_manifest = false;
-                    }
+                    bool is_manifest = document_is_manifest(doc, NULL);
+                    bool is_source = doc->path && lsp_is_snovalang_source(doc->path) && !is_manifest;
                     if (is_manifest || is_source) {
                         LspDocAnalysis *a = is_manifest
                             ? lsp_engine_analyze_manifest(&engine, doc)
