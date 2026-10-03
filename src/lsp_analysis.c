@@ -14,6 +14,57 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <sys/stat.h>
+
+int lsp_is_snovalang_source(const char *path) {
+    size_t n;
+    if (!path) return 0;
+    n = strlen(path);
+    if (n >= 4 && strcmp(path + n - 4, ".snl") == 0) return 1;
+    if (n >= 4 && strcmp(path + n - 4, ".sns") == 0) return 1;
+    return 0;
+}
+
+/* Walk a directory and index only .snl sources and .sns scripts.
+   .snova, .java, .sno, and every other extension are ignored. */
+static size_t lsp_scan_snovalang_tree(SnPackageGraph *g, const char *root) {
+    size_t count = 0;
+    DIR *d;
+    struct dirent *ent;
+
+    if (!g || !root || !root[0]) return 0;
+    d = opendir(root);
+    if (!d) return 0;
+
+    while ((ent = readdir(d)) != NULL) {
+        char path[4096];
+        int written;
+        struct stat st;
+
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+            continue;
+        }
+        written = snprintf(path, sizeof(path), "%s/%s", root, ent->d_name);
+        if (written < 0 || (size_t)written >= sizeof(path)) {
+            continue;
+        }
+        if (stat(path, &st) != 0) {
+            continue;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            count += lsp_scan_snovalang_tree(g, path);
+            continue;
+        }
+        if (!S_ISREG(st.st_mode) || !lsp_is_snovalang_source(path)) {
+            continue;
+        }
+        count++;
+        sn_pkggraph_scan_single_file(g, path);
+    }
+    closedir(d);
+    return count;
+}
 
 void lsp_engine_init(LspAnalysisEngine *engine, const char *workspace_root) {
     engine->analyses = NULL;
@@ -239,7 +290,7 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
     if (engine->workspace_root[0]) {
         project_discover(engine->workspace_root, &ws_proj);
         if (ws_proj.has_manifest && ws_proj.source_root[0] && strcmp(ws_proj.source_root, "/") != 0) {
-            scan_project_roots(&a->graph, &ws_proj);
+            lsp_scan_snovalang_tree(&a->graph, ws_proj.source_root);
         }
     }
 
@@ -250,7 +301,7 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
         project_discover(scan_start, &proj);
         if (proj.has_manifest && proj.source_root[0] && strcmp(proj.source_root, "/") != 0 &&
             (!ws_proj.has_manifest || strcmp(proj.source_root, ws_proj.source_root) != 0)) {
-            scan_project_roots(&a->graph, &proj);
+            lsp_scan_snovalang_tree(&a->graph, proj.source_root);
         }
     }
 
@@ -268,10 +319,10 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
         }
     }
     if (deps_dir) {
-        sn_pkggraph_scan_root(&a->graph, deps_dir);
+        lsp_scan_snovalang_tree(&a->graph, deps_dir);
     }
 
-    if (a->path && a->path[0] && path_is_file(a->path)) {
+    if (a->path && a->path[0] && path_is_file(a->path) && lsp_is_snovalang_source(a->path)) {
         sn_pkggraph_scan_single_file(&a->graph, a->path);
     }
 
@@ -279,10 +330,10 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
                                      ((proj.has_manifest && proj.source_root[0]) ? proj.source_root : engine->workspace_root);
     char builtin_find[SNOVAC_PATH_MAX];
     if (engine->builtin_dir[0]) {
-        sn_pkggraph_scan_root(&a->graph, engine->builtin_dir);
+        lsp_scan_snovalang_tree(&a->graph, engine->builtin_dir);
         sn_pkggraph_load_native_manifest(&a->graph, engine->builtin_dir);
     } else if (source_for_builtin && source_for_builtin[0] && find_builtin_root_for_project(source_for_builtin, builtin_find, sizeof(builtin_find))) {
-        sn_pkggraph_scan_root(&a->graph, builtin_find);
+        lsp_scan_snovalang_tree(&a->graph, builtin_find);
         sn_pkggraph_load_native_manifest(&a->graph, builtin_find);
     }
 
