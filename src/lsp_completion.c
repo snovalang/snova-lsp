@@ -939,6 +939,44 @@ static void add_members_for_typerep(CompList *list, const LspDocAnalysis *a, con
     }
 }
 
+static int import_names_console(const LspDocAnalysis *a) {
+    size_t i;
+    if (!a) return 0;
+    if (import_covers_package(a, "builtin.console")) return 1;
+    for (i = 0; i < a->unit.imports.len; i++) {
+        const char *imp = SN_LIST_AT(a->unit.imports, const char, i);
+        size_t n;
+        if (!imp) continue;
+        if (strcmp(imp, "Console") == 0 || strcmp(imp, "builtin.console.Console") == 0) return 1;
+        n = strlen(imp);
+        if (n >= 8 && strcmp(imp + n - 8, ".Console") == 0) return 1;
+    }
+    return 0;
+}
+
+/* Console.println is the name editors complete. printline is the same intrinsic. */
+static void add_console_members(CompList *list, bool has_following_paren, const char *needed_import) {
+    int fmt = has_following_paren ? 1 : 2;
+    const char *call = has_following_paren ? "" : "($1)";
+    char insert_text[64];
+
+    snprintf(insert_text, sizeof(insert_text), "println%s", call);
+    complist_add(list, "println", LSP_COMPLETION_METHOD,
+                 "func println(msg: string): unit",
+                 "Prints a message and a newline",
+                 insert_text, fmt, needed_import, 96, 0);
+    snprintf(insert_text, sizeof(insert_text), "print%s", call);
+    complist_add(list, "print", LSP_COMPLETION_METHOD,
+                 "func print(msg: string): unit",
+                 "Prints a message",
+                 insert_text, fmt, needed_import, 90, 0);
+    snprintf(insert_text, sizeof(insert_text), "printline%s", call);
+    complist_add(list, "printline", LSP_COMPLETION_METHOD,
+                 "func printline(msg: string): unit",
+                 "Prints a message and a newline",
+                 insert_text, fmt, needed_import, 88, 0);
+}
+
 /* ── Main Completion Handler ─────────────────────────────────────────────── */
 
 char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const LspDocument *doc, LspPosition pos) {
@@ -1027,6 +1065,11 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
                     add_scope_symbols(&list, pkg_scope, CTX_MEMBER, 85, has_following_paren);
                     found_receiver = true;
                 }
+            }
+
+            if (strcmp(receiver_buf, "Console") == 0 && !complist_has_label(&list, "println")) {
+                const char *needed = (a && import_names_console(a)) ? NULL : "builtin.console.Console";
+                add_console_members(&list, has_following_paren, needed);
             }
         }
     } else {
@@ -1239,7 +1282,15 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
         jb_kv_str(&jb, "newText", ci->insert_text ? ci->insert_text : ci->label);
         jb_end_obj(&jb);
 
-        if (ci->additional_import && package_end != UINT32_MAX) {
+        if (ci->additional_import) {
+            LspPosition edit_pos = import_pos;
+            const char *lead = import_newline;
+            char import_text[SNOVAC_PATH_MAX + 32];
+            if (package_end == UINT32_MAX) {
+                edit_pos.line = 0;
+                edit_pos.character = 0;
+                lead = "";
+            }
             jb_key(&jb, "additionalTextEdits");
             jb_start_arr(&jb);
             jb_start_obj(&jb);
@@ -1247,19 +1298,18 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
             jb_start_obj(&jb);
             jb_key(&jb, "start");
             jb_start_obj(&jb);
-            jb_kv_int(&jb, "line", import_pos.line);
-            jb_kv_int(&jb, "character", import_pos.character);
+            jb_kv_int(&jb, "line", edit_pos.line);
+            jb_kv_int(&jb, "character", edit_pos.character);
             jb_end_obj(&jb);
             jb_key(&jb, "end");
             jb_start_obj(&jb);
-            jb_kv_int(&jb, "line", import_pos.line);
-            jb_kv_int(&jb, "character", import_pos.character);
+            jb_kv_int(&jb, "line", edit_pos.line);
+            jb_kv_int(&jb, "character", edit_pos.character);
             jb_end_obj(&jb);
             jb_end_obj(&jb);
 
-            char import_text[SNOVAC_PATH_MAX + 32];
             snprintf(import_text, sizeof(import_text), "%simport %s%s",
-                     import_newline, ci->additional_import, import_newline);
+                     lead, ci->additional_import, import_newline);
             jb_kv_str(&jb, "newText", import_text);
             jb_end_obj(&jb);
             jb_end_arr(&jb);

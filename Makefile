@@ -24,7 +24,8 @@ BIN = $(BIN_DIR)/snova-lsp$(EXE)
 TEST_BIN = $(BUILD)/test_completion$(EXE)
 
 SRCS = src/json.c src/lsp_transport.c src/lsp_document.c src/lsp_analysis.c \
-       src/lsp_definition.c src/lsp_hover.c src/lsp_symbols.c src/lsp_completion.c \
+       src/lsp_definition.c src/lsp_hover.c src/lsp_symbols.c src/lsp_symbol_span.c \
+       src/lsp_completion.c \
        src/lsp_code_action.c src/lsp_semantic.c src/lsp_references.c src/lsp_signature.c src/main.c
 
 OBJS = $(addprefix $(BUILD)/,$(notdir $(SRCS:.c=.o)))
@@ -41,11 +42,13 @@ rebuild:
 	$(MAKE) all
 
 $(BUILD):
-	mkdir $(BUILD)
+	mkdir -p $(BUILD)
 
+ifneq ($(BIN_DIR),$(BUILD))
 $(BIN_DIR):
 	if not exist tools mkdir tools
 	if not exist tools\bin mkdir tools\bin
+endif
 
 $(SNOVAC_LIB):
 	$(MAKE) -C $(SNOVAC_DIR) all

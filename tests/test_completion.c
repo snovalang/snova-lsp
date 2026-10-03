@@ -1,4 +1,5 @@
 #include "lsp_completion.h"
+#include "lsp_symbols.h"
 #include "lsp_analysis.h"
 #include "lsp_document.h"
 #include "lsp_code_action.h"
@@ -6,6 +7,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <assert.h>
 
@@ -232,7 +234,7 @@ static void test_deps_recommendation(void) {
 #endif
 
     char manifest_path[512];
-    snprintf(manifest_path, sizeof(manifest_path), "%s/mod.sno", tmp_root);
+    snprintf(manifest_path, sizeof(manifest_path), "%s/mod.sns", tmp_root);
     FILE *f_manifest = fopen(manifest_path, "w");
     if (f_manifest) {
         fprintf(f_manifest, "module app\n\nsnova \"1.0.0\"\n");
@@ -677,6 +679,257 @@ static void test_code_actions(void) {
     printf("✓ test_code_actions passed\n");
 }
 
+static int pos_le(int64_t line_a, int64_t col_a, int64_t line_b, int64_t col_b) {
+    return line_a < line_b || (line_a == line_b && col_a <= col_b);
+}
+
+static int range_contains(const JsonVal *outer, const JsonVal *inner) {
+    const JsonVal *outer_start = json_get_obj(outer, "start");
+    const JsonVal *outer_end = json_get_obj(outer, "end");
+    const JsonVal *inner_start = json_get_obj(inner, "start");
+    const JsonVal *inner_end = json_get_obj(inner, "end");
+    if (!outer_start || !outer_end || !inner_start || !inner_end) return 0;
+    return pos_le(json_get_int(outer_start, "line", -1), json_get_int(outer_start, "character", -1),
+                  json_get_int(inner_start, "line", -1), json_get_int(inner_start, "character", -1)) &&
+           pos_le(json_get_int(inner_end, "line", -1), json_get_int(inner_end, "character", -1),
+                  json_get_int(outer_end, "line", -1), json_get_int(outer_end, "character", -1));
+}
+
+static const JsonVal *find_symbol(const JsonVal *arr, const char *name) {
+    size_t i;
+    if (!arr || !name) return NULL;
+    for (i = 0; i < json_arr_len(arr); i++) {
+        const JsonVal *item = json_arr_at(arr, i);
+        const JsonVal *children;
+        const JsonVal *found;
+        if (!item) continue;
+        if (strcmp(json_get_str(item, "name", ""), name) == 0) return item;
+        children = json_get_arr(item, "children");
+        found = find_symbol(children, name);
+        if (found) return found;
+    }
+    return NULL;
+}
+
+static void assert_symbol_contained(const JsonVal *symbol) {
+    const JsonVal *range;
+    const JsonVal *selection;
+    const JsonVal *children;
+    size_t i;
+    assert(symbol != NULL);
+    range = json_get_obj(symbol, "range");
+    selection = json_get_obj(symbol, "selectionRange");
+    assert(range != NULL && selection != NULL);
+    assert(range_contains(range, selection));
+    children = json_get_arr(symbol, "children");
+    for (i = 0; i < json_arr_len(children); i++) {
+        const JsonVal *child = json_arr_at(children, i);
+        const JsonVal *child_range = json_get_obj(child, "range");
+        assert(child_range != NULL);
+        assert(range_contains(range, child_range));
+        assert_symbol_contained(child);
+    }
+}
+
+static void test_document_symbol_ranges(void) {
+    LspDocStore store;
+    LspAnalysisEngine engine;
+    const char *code =
+        "struct Snovalang {\n"
+        "    let version: string\n"
+        "\n"
+        "    func greet(): unit {\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "func main(): unit {\n"
+        "}\n";
+    LspDocument *doc;
+    char *json_res;
+    JsonPool *pool;
+    const char *err = NULL;
+    JsonVal *root;
+    const JsonVal *type_sym;
+    const JsonVal *field_sym;
+    const JsonVal *method_sym;
+    const JsonVal *func_sym;
+    const JsonVal *selection;
+    const JsonVal *selection_start;
+
+    lsp_docstore_init(&store);
+    lsp_engine_init(&engine, NULL);
+    doc = lsp_docstore_open(&store, "file:///main.snl", 1, code, strlen(code));
+    assert(doc != NULL);
+    json_res = lsp_document_symbols_query(&engine, doc);
+    assert(json_res != NULL);
+
+    pool = json_pool_create(strlen(json_res) + 1024);
+    root = json_parse(pool, json_res, strlen(json_res), &err);
+    assert(root != NULL);
+
+    type_sym = find_symbol(root, "Snovalang");
+    field_sym = find_symbol(root, "version");
+    method_sym = find_symbol(root, "greet");
+    func_sym = find_symbol(root, "main");
+    assert(type_sym && field_sym && method_sym && func_sym);
+    assert_symbol_contained(type_sym);
+    assert_symbol_contained(func_sym);
+
+    selection = json_get_obj(type_sym, "selectionRange");
+    selection_start = json_get_obj(selection, "start");
+    assert(json_get_int(selection_start, "line", -1) == 0);
+    assert(json_get_int(selection_start, "character", -1) == 7);
+
+    json_pool_destroy(pool);
+    free(json_res);
+    lsp_engine_destroy(&engine);
+    lsp_docstore_destroy(&store);
+    printf("✓ test_document_symbol_ranges passed\n");
+}
+
+static int completion_has_label(const JsonVal *items, const char *label, const JsonVal **out_item) {
+    size_t i;
+    if (out_item) *out_item = NULL;
+    for (i = 0; i < json_arr_len(items); i++) {
+        const JsonVal *item = json_arr_at(items, i);
+        if (strcmp(json_get_str(item, "label", ""), label) == 0) {
+            if (out_item) *out_item = item;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void test_completion_on_source_and_script(void) {
+    const char *uris[] = {"file:///main.snl", "file:///tool.sns"};
+    const char *code =
+        "struct Snovalang {\n"
+        "    let name: string\n"
+        "}\n"
+        "\n"
+        "func main(): unit {\n"
+        "    Snov\n"
+        "    Console.\n"
+        "}\n";
+    size_t u;
+
+    for (u = 0; u < 2; u++) {
+        LspDocStore store;
+        LspAnalysisEngine engine;
+        LspDocument *doc;
+        LspPosition name_pos = { .line = 5, .character = 8 };
+        LspPosition member_pos = { .line = 6, .character = 12 };
+        char *json_name;
+        char *json_member;
+        JsonPool *pool;
+        const char *err = NULL;
+        JsonVal *root;
+        const JsonVal *items;
+        const JsonVal *println;
+
+        lsp_docstore_init(&store);
+        lsp_engine_init(&engine, NULL);
+        doc = lsp_docstore_open(&store, uris[u], 1, code, strlen(code));
+        assert(doc != NULL);
+
+        json_name = lsp_completion_query(&engine, &store, doc, name_pos);
+        assert(json_name != NULL);
+        pool = json_pool_create(strlen(json_name) + 1024);
+        root = json_parse(pool, json_name, strlen(json_name), &err);
+        assert(root != NULL);
+        items = json_get_arr(root, "items");
+        assert(completion_has_label(items, "Snovalang", NULL));
+        json_pool_destroy(pool);
+        free(json_name);
+
+        json_member = lsp_completion_query(&engine, &store, doc, member_pos);
+        assert(json_member != NULL);
+        pool = json_pool_create(strlen(json_member) + 1024);
+        root = json_parse(pool, json_member, strlen(json_member), &err);
+        assert(root != NULL);
+        items = json_get_arr(root, "items");
+        assert(completion_has_label(items, "println", &println));
+        assert(println != NULL);
+        assert(json_get_arr(println, "additionalTextEdits") != NULL);
+        assert(strstr(json_get_str(json_arr_at(json_get_arr(println, "additionalTextEdits"), 0), "newText", ""),
+                      "import builtin.console.Console") != NULL);
+        json_pool_destroy(pool);
+        free(json_member);
+        lsp_engine_destroy(&engine);
+        lsp_docstore_destroy(&store);
+    }
+    printf("✓ test_completion_on_source_and_script passed\n");
+}
+
+static void test_sns_manifest_autoimport(void) {
+#if defined(_WIN32)
+    system("if exist C:\\tmp\\snova_lsp_sns_test rmdir /s /q C:\\tmp\\snova_lsp_sns_test");
+    system("mkdir C:\\tmp\\snova_lsp_sns_test");
+    system("mkdir C:\\tmp\\snova_lsp_sns_test\\src");
+    const char *tmp_root = "C:/tmp/snova_lsp_sns_test";
+#else
+    system("rm -rf /tmp/snova_lsp_sns_test");
+    system("mkdir -p /tmp/snova_lsp_sns_test/src");
+    const char *tmp_root = "/tmp/snova_lsp_sns_test";
+#endif
+    char path[512];
+    FILE *file;
+    LspDocStore store;
+    LspAnalysisEngine engine;
+    const char *code =
+        "package main\n"
+        "\n"
+        "func app(): unit {\n"
+        "    Wid\n"
+        "}\n";
+    char uri[512];
+    LspDocument *doc;
+    LspPosition pos = { .line = 3, .character = 7 };
+    char *json_res;
+    JsonPool *pool;
+    const char *err = NULL;
+    JsonVal *root;
+    const JsonVal *item = NULL;
+
+    snprintf(path, sizeof(path), "%s/mod.sns", tmp_root);
+    file = fopen(path, "w");
+    assert(file != NULL);
+    fprintf(file, "module app\n\nsnova \"1.0.0\"\n");
+    fclose(file);
+
+    snprintf(path, sizeof(path), "%s/src/Widget.snl", tmp_root);
+    file = fopen(path, "w");
+    assert(file != NULL);
+    fprintf(file, "package widgets\n\npublic struct Widget {\n    public let id: int\n}\n");
+    fclose(file);
+
+    lsp_docstore_init(&store);
+    lsp_engine_init(&engine, tmp_root);
+    snprintf(uri, sizeof(uri), "file:///%s/src/App.snl", tmp_root);
+    doc = lsp_docstore_open(&store, uri, 1, code, strlen(code));
+    assert(doc != NULL);
+    json_res = lsp_completion_query(&engine, &store, doc, pos);
+    assert(json_res != NULL);
+    pool = json_pool_create(strlen(json_res) + 2048);
+    root = json_parse(pool, json_res, strlen(json_res), &err);
+    assert(root != NULL);
+    assert(completion_has_label(json_get_arr(root, "items"), "Widget", &item));
+    assert(item != NULL);
+    assert(strstr(json_get_str(json_arr_at(json_get_arr(item, "additionalTextEdits"), 0), "newText", ""),
+                  "import widgets") != NULL);
+
+    json_pool_destroy(pool);
+    free(json_res);
+    lsp_engine_destroy(&engine);
+    lsp_docstore_destroy(&store);
+#if defined(_WIN32)
+    system("if exist C:\\tmp\\snova_lsp_sns_test rmdir /s /q C:\\tmp\\snova_lsp_sns_test");
+#else
+    system("rm -rf /tmp/snova_lsp_sns_test");
+#endif
+    printf("✓ test_sns_manifest_autoimport passed\n");
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -688,6 +941,9 @@ int main(void) {
     test_deps_recommendation();
     test_semantic_member_completion();
     test_code_actions();
-    printf("All completion and code action tests passed successfully! (7/7)\n");
+    test_document_symbol_ranges();
+    test_completion_on_source_and_script();
+    test_sns_manifest_autoimport();
+    printf("All completion and code action tests passed successfully! (10/10)\n");
     return 0;
 }

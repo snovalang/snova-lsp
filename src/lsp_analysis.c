@@ -26,8 +26,72 @@ int lsp_is_snovalang_source(const char *path) {
     return 0;
 }
 
+int lsp_is_manifest_file(const char *path) {
+    const char *base;
+    if (!path || !path[0]) return 0;
+    base = strrchr(path, '/');
+    if (!base) base = strrchr(path, '\\');
+    base = base ? base + 1 : path;
+    return strcmp(base, "mod.sns") == 0 ||
+           strcmp(base, "snova.sns") == 0 ||
+           strcmp(base, "snova.mod") == 0 ||
+           strcmp(base, "snova.toml") == 0 ||
+           strcmp(base, "Snovalang.toml") == 0;
+}
+
+/* The compiler still discovers mod.sno. Projects now ship mod.sns / snova.sns,
+   so fill the same project fields when that file is found above `start_path`. */
+static void lsp_fill_sns_project(SnProject *proj, const char *start_path) {
+    static const char *names[] = {"mod.sns", "snova.sns"};
+    char start_dir[SNOVAC_PATH_MAX];
+    char cur[SNOVAC_PATH_MAX];
+    int depth;
+
+    if (!proj || proj->has_manifest || !start_path || !start_path[0]) return;
+    if (path_is_dir(start_path)) {
+        snprintf(start_dir, sizeof(start_dir), "%s", start_path);
+    } else {
+        dirname_into(start_path, start_dir, sizeof(start_dir));
+    }
+    normalize_path_into(start_dir, cur, sizeof(cur));
+
+    for (depth = 0; depth < 32; depth++) {
+        size_t i;
+        for (i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+            char candidate[SNOVAC_PATH_MAX + 32];
+            char src_dir[SNOVAC_PATH_MAX + 16];
+            char deps[SNOVAC_PATH_MAX + 32];
+            int written = snprintf(candidate, sizeof(candidate), "%s/%s", cur, names[i]);
+            if (written < 0 || (size_t)written >= sizeof(candidate)) continue;
+            if (!path_is_file(candidate)) continue;
+            proj->has_manifest = 1;
+            normalize_path_into(cur, proj->manifest_dir, sizeof(proj->manifest_dir));
+            snprintf(src_dir, sizeof(src_dir), "%s/src", cur);
+            if (path_is_dir(src_dir)) {
+                normalize_path_into(src_dir, proj->source_root, sizeof(proj->source_root));
+            } else {
+                normalize_path_into(cur, proj->source_root, sizeof(proj->source_root));
+            }
+            snprintf(deps, sizeof(deps), "%s/.snovalang/deps", cur);
+            if (path_is_dir(deps)) {
+                normalize_path_into(deps, proj->deps_root, sizeof(proj->deps_root));
+            }
+            return;
+        }
+        if (strcmp(cur, "/") == 0) return;
+        {
+            char parent[SNOVAC_PATH_MAX];
+            char next[SNOVAC_PATH_MAX];
+            snprintf(parent, sizeof(parent), "%s/..", cur);
+            normalize_path_into(parent, next, sizeof(next));
+            if (strcmp(next, cur) == 0) return;
+            memcpy(cur, next, sizeof(cur));
+        }
+    }
+}
+
 /* Walk a directory and index only .snl sources and .sns scripts.
-   .snova, .java, .sno, and every other extension are ignored. */
+   Manifest files and every other extension are ignored. */
 static size_t lsp_scan_snovalang_tree(SnPackageGraph *g, const char *root) {
     size_t count = 0;
     DIR *d;
@@ -56,7 +120,7 @@ static size_t lsp_scan_snovalang_tree(SnPackageGraph *g, const char *root) {
             count += lsp_scan_snovalang_tree(g, path);
             continue;
         }
-        if (!S_ISREG(st.st_mode) || !lsp_is_snovalang_source(path)) {
+        if (!S_ISREG(st.st_mode) || !lsp_is_snovalang_source(path) || lsp_is_manifest_file(path)) {
             continue;
         }
         count++;
@@ -308,6 +372,7 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
     memset(&ws_proj, 0, sizeof(ws_proj));
     if (engine->workspace_root[0]) {
         project_discover(engine->workspace_root, &ws_proj);
+        lsp_fill_sns_project(&ws_proj, engine->workspace_root);
         if (ws_proj.has_manifest && ws_proj.source_root[0] && strcmp(ws_proj.source_root, "/") != 0) {
             lsp_scan_snovalang_tree(&a->graph, ws_proj.source_root);
         }
@@ -318,6 +383,7 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
     const char *scan_start = (a->path && a->path[0] && strcmp(a->path, "/") != 0) ? a->path : engine->workspace_root;
     if (scan_start && scan_start[0]) {
         project_discover(scan_start, &proj);
+        lsp_fill_sns_project(&proj, scan_start);
         if (proj.has_manifest && proj.source_root[0] && strcmp(proj.source_root, "/") != 0 &&
             (!ws_proj.has_manifest || strcmp(proj.source_root, ws_proj.source_root) != 0)) {
             lsp_scan_snovalang_tree(&a->graph, proj.source_root);
@@ -722,7 +788,7 @@ const SnSymbol *lsp_find_symbol_at(const LspDocAnalysis *a, const LspDocument *d
 }
 
 /* -----------------------------------------------------------------------
- * Snova Manifest Analysis  (mod.sno / snova.mod)
+ * Snova Manifest Analysis  (mod.sns / snova.sns / snova.mod)
  * Parses the manifest text and produces LSP diagnostics for:
  *   - missing/malformed "module" declaration
  *   - missing/malformed "snova" version declaration
