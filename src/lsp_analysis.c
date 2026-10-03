@@ -67,6 +67,23 @@ static void capture_diagnostic(void *ctx, SnDiagLevel level, int code,
     diag_list_add((CapturedDiagList *)ctx, code, level, span, message, file_path);
 }
 
+/*
+ * Compiler diagnostics are captured by callback for the IDE. The formatted
+ * text must not go to the LSP stdout, and it must not use tmpfile(): on
+ * Windows that call returns NULL for a normal user, and the next fprintf
+ * on a NULL FILE* kills the process during the first didOpen.
+ */
+static FILE *open_discard_file(void) {
+#ifdef _WIN32
+    const char *null_path = "NUL";
+#else
+    const char *null_path = "/dev/null";
+#endif
+    FILE *f = fopen(null_path, "wb");
+    if (f) return f;
+    return tmpfile();
+}
+
 static void free_analysis(LspDocAnalysis *a) {
     if (!a) return;
     if (a->uri) free(a->uri);
@@ -215,8 +232,10 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
 
     sn_diag_init(&a->diag, a->path ? a->path : "", doc->text, doc->text_len);
     sn_diag_set_callback(&a->diag, capture_diagnostic, &a->diags);
-    FILE *diag_mem = tmpfile();
-    a->diag.out = diag_mem;
+    FILE *diag_mem = open_discard_file();
+    if (diag_mem) {
+        a->diag.out = diag_mem;
+    }
     a->diag.use_color = 0;
 
     // 1. Lex
