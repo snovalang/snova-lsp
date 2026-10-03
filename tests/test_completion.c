@@ -29,7 +29,7 @@ static void test_general_ranking(void) {
         "    req\n"
         "}\n";
 
-    LspDocument *doc = lsp_docstore_open(&store, "file:///main.snova", 1, code, strlen(code));
+    LspDocument *doc = lsp_docstore_open(&store, "file:///main.snl", 1, code, strlen(code));
     assert(doc != NULL);
 
     // Completion at line 9 ("    req"), character 7 (after 'req')
@@ -90,7 +90,7 @@ static void test_acronym_matching(void) {
         "    ghr\n"
         "}\n";
 
-    LspDocument *doc = lsp_docstore_open(&store, "file:///main.snova", 1, code, strlen(code));
+    LspDocument *doc = lsp_docstore_open(&store, "file:///main.snl", 1, code, strlen(code));
     assert(doc != NULL);
 
     // Completion after typing "ghr" at line 7, col 7
@@ -135,7 +135,7 @@ static void test_type_context_ranking(void) {
         "func test(u: ): unit {\n"
         "}\n";
 
-    LspDocument *doc = lsp_docstore_open(&store, "file:///main.snova", 1, code, strlen(code));
+    LspDocument *doc = lsp_docstore_open(&store, "file:///main.snl", 1, code, strlen(code));
     assert(doc != NULL);
 
     // Completion in type position after `u: ` at line 6, col 14
@@ -184,7 +184,7 @@ static void test_decorator_ranking(void) {
         "@\n"
         "func handler(): unit {}\n";
 
-    LspDocument *doc = lsp_docstore_open(&store, "file:///main.snova", 1, code, strlen(code));
+    LspDocument *doc = lsp_docstore_open(&store, "file:///main.snl", 1, code, strlen(code));
     assert(doc != NULL);
 
     // Completion after '@' at line 2, col 1
@@ -214,7 +214,7 @@ static void test_decorator_ranking(void) {
 }
 
 static void test_deps_recommendation(void) {
-    // 1. Setup temporary workspace with .snovalang/deps/**/*.snova
+    // 1. Setup temporary workspace with .snovalang/deps/**/*.snl and **/*.sns
 #if defined(_WIN32)
     system("if exist C:\\tmp\\snova_lsp_deps_test rmdir /s /q C:\\tmp\\snova_lsp_deps_test");
     system("mkdir C:\\tmp\\snova_lsp_deps_test");
@@ -241,7 +241,7 @@ static void test_deps_recommendation(void) {
 
     char dependency_path[512];
     snprintf(dependency_path, sizeof(dependency_path),
-             "%s/.snovalang/deps/snova-remote/src/Remote.snova", tmp_root);
+             "%s/.snovalang/deps/snova-remote/src/Remote.snl", tmp_root);
     FILE *f_dep = fopen(dependency_path, "w");
     if (f_dep) {
         fprintf(f_dep,
@@ -269,7 +269,7 @@ static void test_deps_recommendation(void) {
         "}\n";
 
     char app_uri[512];
-    snprintf(app_uri, sizeof(app_uri), "file:///%s/src/App.snova", tmp_root);
+    snprintf(app_uri, sizeof(app_uri), "file:///%s/src/App.snl", tmp_root);
     LspDocument *doc = lsp_docstore_open(&store, app_uri, 1, code, strlen(code));
     assert(doc != NULL);
 
@@ -378,7 +378,7 @@ static void test_semantic_member_completion(void) {
         "    str.\n"
         "}\n";
 
-    LspDocument *doc = lsp_docstore_open(&store, "file:///semantic.snova", 1, code, strlen(code));
+    LspDocument *doc = lsp_docstore_open(&store, "file:///semantic.snl", 1, code, strlen(code));
     assert(doc != NULL);
 
     // 1. Test member completion on struct instance: u. at line 11, character 6
@@ -461,7 +461,7 @@ static void test_semantic_member_completion(void) {
         "    res_user.\n"
         "}\n";
 
-    LspDocument *opt_doc = lsp_docstore_open(&store, "file:///opt_test.snova", 1, opt_code, strlen(opt_code));
+    LspDocument *opt_doc = lsp_docstore_open(&store, "file:///opt_test.snl", 1, opt_code, strlen(opt_code));
     assert(opt_doc != NULL);
 
     // Test opt_user. (Option methods)
@@ -520,7 +520,7 @@ static void test_semantic_member_completion(void) {
         "    }\n"
         "}\n";
 
-    LspDocument *chain_doc = lsp_docstore_open(&store, "file:///chain_test.snova", 1, chain_code, strlen(chain_code));
+    LspDocument *chain_doc = lsp_docstore_open(&store, "file:///chain_test.snl", 1, chain_code, strlen(chain_code));
     assert(chain_doc != NULL);
 
     // acc.profile. at line 7, char 16
@@ -589,7 +589,7 @@ static void test_code_actions(void) {
         "    return total;\n"
         "}\n";
 
-    LspDocument *doc = lsp_docstore_open(&store, "file:///actions.snova", 1, code, strlen(code));
+    LspDocument *doc = lsp_docstore_open(&store, "file:///actions.snl", 1, code, strlen(code));
     assert(doc != NULL);
 
     // 1. Query code actions on line 10 ("func compute(val: Int): int {")

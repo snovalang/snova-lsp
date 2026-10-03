@@ -86,9 +86,12 @@ LspDocAnalysis *lsp_engine_get_analysis(LspAnalysisEngine *engine, const char *u
 /* Invalidate / free analysis for closed doc */
 void lsp_engine_remove_analysis(LspAnalysisEngine *engine, const char *uri);
 
-/* Analyzes a snova-manifest file (mod.sno) and returns diagnostics-only analysis.
+/* Analyzes a manifest file (mod.sno, snova.mod, snova.sno) and returns diagnostics-only analysis.
    The returned object is owned by the engine and freed on the next call or engine destroy. */
 LspDocAnalysis *lsp_engine_analyze_manifest(LspAnalysisEngine *engine, const LspDocument *doc);
+
+/* Snovalang sources are .snl. Snovalang scripts are .sns. No other extension qualifies. */
+int lsp_is_snovalang_source(const char *path);
 
 /* Search / AST helpers */
 const SnToken *lsp_find_token_at(const LspDocAnalysis *a, uint32_t offset);

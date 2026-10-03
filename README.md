@@ -20,9 +20,11 @@ The executable is emitted to `tools/bin/snova-lsp.exe`, which is the location
 used by the Snovalang editor extension. Add that directory to `PATH` when
 launching the server manually.
 
+Snovalang sources use the `.snl` extension. Snovalang scripts use `.sns`. The server indexes and analyzes only those two extensions. `.snova`, `.java`, and every other extension are ignored.
+
 ## Docstring Support
 The LSP server automatically parses documentation formatted as:
-```snova
+```snl
 /* -- Doc:{FuncName}
  *
  * -- Description: Documentation description text.

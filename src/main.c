@@ -389,12 +389,10 @@ int main(int argc, char **argv) {
                 const char *text     = json_get_str(td, "text", "");
                 LspDocument *doc = lsp_docstore_open(&doc_store, uri, version, text, strlen(text));
                 if (doc) {
-                    /* Route manifest files (mod.sno / snova-manifest language) to
-                       the dedicated manifest analyser; all other .sno files go through
-                       the full compiler pipeline. */
+                    /* Manifests are named files. Snovalang itself is only .snl and .sns. */
                     bool is_manifest = (strcmp(lang_id, "snova-manifest") == 0);
+                    bool is_source = doc->path && lsp_is_snovalang_source(doc->path);
                     if (!is_manifest && doc->path) {
-                        /* Also detect by file name in case the editor doesn't set languageId */
                         const char *base = strrchr(doc->path, '/');
                         if (!base) base = strrchr(doc->path, '\\');
                         base = base ? base + 1 : doc->path;
@@ -402,14 +400,19 @@ int main(int argc, char **argv) {
                                        strcmp(base, "snova.mod") == 0 ||
                                        strcmp(base, "snova.sno") == 0);
                     }
-                    LspDocAnalysis *a = is_manifest
-                        ? lsp_engine_analyze_manifest(&engine, doc)
-                        : lsp_engine_analyze_document(&engine, &doc_store, doc);
-                    if (a) {
-                        if (is_manifest)
-                            publish_diagnostics(&transport, doc, a);
-                        else
-                            publish_all_diagnostics(&transport, &doc_store, doc, a);
+                    if (is_source) {
+                        is_manifest = false;
+                    }
+                    if (is_manifest || is_source) {
+                        LspDocAnalysis *a = is_manifest
+                            ? lsp_engine_analyze_manifest(&engine, doc)
+                            : lsp_engine_analyze_document(&engine, &doc_store, doc);
+                        if (a) {
+                            if (is_manifest)
+                                publish_diagnostics(&transport, doc, a);
+                            else
+                                publish_all_diagnostics(&transport, &doc_store, doc, a);
+                        }
                     }
                 }
             }
@@ -424,6 +427,7 @@ int main(int argc, char **argv) {
                 LspDocument *doc = lsp_docstore_update(&doc_store, uri, version, text, strlen(text));
                 if (doc) {
                     bool is_manifest = false;
+                    bool is_source = doc->path && lsp_is_snovalang_source(doc->path);
                     if (doc->path) {
                         const char *base = strrchr(doc->path, '/');
                         if (!base) base = strrchr(doc->path, '\\');
@@ -432,14 +436,19 @@ int main(int argc, char **argv) {
                                        strcmp(base, "snova.mod") == 0 ||
                                        strcmp(base, "snova.sno") == 0);
                     }
-                    LspDocAnalysis *a = is_manifest
-                        ? lsp_engine_analyze_manifest(&engine, doc)
-                        : lsp_engine_analyze_document(&engine, &doc_store, doc);
-                    if (a) {
-                        if (is_manifest)
-                            publish_diagnostics(&transport, doc, a);
-                        else
-                            publish_all_diagnostics(&transport, &doc_store, doc, a);
+                    if (is_source) {
+                        is_manifest = false;
+                    }
+                    if (is_manifest || is_source) {
+                        LspDocAnalysis *a = is_manifest
+                            ? lsp_engine_analyze_manifest(&engine, doc)
+                            : lsp_engine_analyze_document(&engine, &doc_store, doc);
+                        if (a) {
+                            if (is_manifest)
+                                publish_diagnostics(&transport, doc, a);
+                            else
+                                publish_all_diagnostics(&transport, &doc_store, doc, a);
+                        }
                     }
                 }
             }
