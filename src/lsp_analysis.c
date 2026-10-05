@@ -48,12 +48,12 @@ static void lsp_fill_sns_project(SnProject *proj, const char *start_path) {
     int depth;
 
     if (!proj || proj->has_manifest || !start_path || !start_path[0]) return;
-    if (path_is_dir(start_path)) {
+    if (sn_driver_path_is_dir(start_path)) {
         snprintf(start_dir, sizeof(start_dir), "%s", start_path);
     } else {
-        dirname_into(start_path, start_dir, sizeof(start_dir));
+        sn_driver_dirname_into(start_path, start_dir, sizeof(start_dir));
     }
-    normalize_path_into(start_dir, cur, sizeof(cur));
+    sn_driver_normalize_path(start_dir, cur, sizeof(cur));
 
     for (depth = 0; depth < 32; depth++) {
         size_t i;
@@ -63,18 +63,18 @@ static void lsp_fill_sns_project(SnProject *proj, const char *start_path) {
             char deps[SNOVAC_PATH_MAX + 32];
             int written = snprintf(candidate, sizeof(candidate), "%s/%s", cur, names[i]);
             if (written < 0 || (size_t)written >= sizeof(candidate)) continue;
-            if (!path_is_file(candidate)) continue;
+            if (!sn_driver_path_is_file(candidate)) continue;
             proj->has_manifest = 1;
-            normalize_path_into(cur, proj->manifest_dir, sizeof(proj->manifest_dir));
+            sn_driver_normalize_path(cur, proj->manifest_dir, sizeof(proj->manifest_dir));
             snprintf(src_dir, sizeof(src_dir), "%s/src", cur);
-            if (path_is_dir(src_dir)) {
-                normalize_path_into(src_dir, proj->source_root, sizeof(proj->source_root));
+            if (sn_driver_path_is_dir(src_dir)) {
+                sn_driver_normalize_path(src_dir, proj->source_root, sizeof(proj->source_root));
             } else {
-                normalize_path_into(cur, proj->source_root, sizeof(proj->source_root));
+                sn_driver_normalize_path(cur, proj->source_root, sizeof(proj->source_root));
             }
             snprintf(deps, sizeof(deps), "%s/.snovalang/deps", cur);
-            if (path_is_dir(deps)) {
-                normalize_path_into(deps, proj->deps_root, sizeof(proj->deps_root));
+            if (sn_driver_path_is_dir(deps)) {
+                sn_driver_normalize_path(deps, proj->deps_root, sizeof(proj->deps_root));
             }
             return;
         }
@@ -83,7 +83,7 @@ static void lsp_fill_sns_project(SnProject *proj, const char *start_path) {
             char parent[SNOVAC_PATH_MAX];
             char next[SNOVAC_PATH_MAX];
             snprintf(parent, sizeof(parent), "%s/..", cur);
-            normalize_path_into(parent, next, sizeof(next));
+            sn_driver_normalize_path(parent, next, sizeof(next));
             if (strcmp(next, cur) == 0) return;
             memcpy(cur, next, sizeof(cur));
         }
@@ -141,8 +141,8 @@ void lsp_engine_init(LspAnalysisEngine *engine, const char *workspace_root) {
 
 void lsp_engine_set_workspace_root(LspAnalysisEngine *engine, const char *workspace_root) {
     if (!workspace_root) return;
-    normalize_path_into(workspace_root, engine->workspace_root, sizeof(engine->workspace_root));
-    find_builtin_root_for_project(engine->workspace_root, engine->builtin_dir, sizeof(engine->builtin_dir));
+    sn_driver_normalize_path(workspace_root, engine->workspace_root, sizeof(engine->workspace_root));
+    sn_project_find_builtin_root(engine->workspace_root, engine->builtin_dir, sizeof(engine->builtin_dir));
 }
 
 static void diag_list_init(CapturedDiagList *dl) {
@@ -371,7 +371,7 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
     SnProject ws_proj;
     memset(&ws_proj, 0, sizeof(ws_proj));
     if (engine->workspace_root[0]) {
-        project_discover(engine->workspace_root, &ws_proj);
+        sn_project_discover(engine->workspace_root, &ws_proj);
         lsp_fill_sns_project(&ws_proj, engine->workspace_root);
         if (ws_proj.has_manifest && ws_proj.source_root[0] && strcmp(ws_proj.source_root, "/") != 0) {
             lsp_scan_snovalang_tree(&a->graph, ws_proj.source_root);
@@ -382,7 +382,7 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
     memset(&proj, 0, sizeof(proj));
     const char *scan_start = (a->path && a->path[0] && strcmp(a->path, "/") != 0) ? a->path : engine->workspace_root;
     if (scan_start && scan_start[0]) {
-        project_discover(scan_start, &proj);
+        sn_project_discover(scan_start, &proj);
         lsp_fill_sns_project(&proj, scan_start);
         if (proj.has_manifest && proj.source_root[0] && strcmp(proj.source_root, "/") != 0 &&
             (!ws_proj.has_manifest || strcmp(proj.source_root, ws_proj.source_root) != 0)) {
@@ -393,13 +393,13 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
     // Always scan .snovalang/deps to ensure direct/indirect packages are complete
     const char *deps_dir = NULL;
     char ws_deps[SNOVAC_PATH_MAX + 32];
-    if (proj.deps_root[0] && path_is_dir(proj.deps_root)) {
+    if (proj.deps_root[0] && sn_driver_path_is_dir(proj.deps_root)) {
         deps_dir = proj.deps_root;
-    } else if (ws_proj.deps_root[0] && path_is_dir(ws_proj.deps_root)) {
+    } else if (ws_proj.deps_root[0] && sn_driver_path_is_dir(ws_proj.deps_root)) {
         deps_dir = ws_proj.deps_root;
     } else if (engine->workspace_root[0]) {
         snprintf(ws_deps, sizeof(ws_deps), "%s/.snovalang/deps", engine->workspace_root);
-        if (path_is_dir(ws_deps)) {
+        if (sn_driver_path_is_dir(ws_deps)) {
             deps_dir = ws_deps;
         }
     }
@@ -407,7 +407,7 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
         lsp_scan_snovalang_tree(&a->graph, deps_dir);
     }
 
-    if (a->path && a->path[0] && path_is_file(a->path) && lsp_is_snovalang_source(a->path)) {
+    if (a->path && a->path[0] && sn_driver_path_is_file(a->path) && lsp_is_snovalang_source(a->path)) {
         sn_pkggraph_scan_single_file(&a->graph, a->path);
     }
 
@@ -417,7 +417,7 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
     if (engine->builtin_dir[0]) {
         lsp_scan_snovalang_tree(&a->graph, engine->builtin_dir);
         sn_pkggraph_load_native_manifest(&a->graph, engine->builtin_dir);
-    } else if (source_for_builtin && source_for_builtin[0] && find_builtin_root_for_project(source_for_builtin, builtin_find, sizeof(builtin_find))) {
+    } else if (source_for_builtin && source_for_builtin[0] && sn_project_find_builtin_root(source_for_builtin, builtin_find, sizeof(builtin_find))) {
         lsp_scan_snovalang_tree(&a->graph, builtin_find);
         sn_pkggraph_load_native_manifest(&a->graph, builtin_find);
     }
@@ -427,7 +427,7 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
     SnList cycle;
     memset(&cycle, 0, sizeof(cycle));
     if (sn_pkggraph_find_cycle(&a->graph, &cycle)) {
-        report_import_cycle(&a->diag, &a->graph, &cycle);
+        sn_cmd_report_import_cycle(&a->diag, &a->graph, &cycle);
     }
 
     // 4. Resolve symbols & prelude
@@ -440,7 +440,7 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
     sn_checker_init(&a->checker, &a->arena, &a->intern, &a->diag, &a->resolver, &a->types);
     const char *check_prefix = source_for_builtin;
     SnBodyCheckScope scope = { .own_prefix = check_prefix };
-    check_all_bodies(&a->checker, &a->resolver, &a->graph, &a->arena, &scope);
+    sn_cmd_check_all_bodies(&a->checker, &a->resolver, &a->graph, &a->arena, &scope);
 
     a->diag.quiet = 1;
     if (diag_mem) {

@@ -3,6 +3,7 @@
 #include "lsp_analysis.h"
 #include "lsp_document.h"
 #include "lsp_code_action.h"
+#include "lsp_semantic.h"
 #include "json.h"
 
 #include <stdio.h>
@@ -930,6 +931,136 @@ static void test_sns_manifest_autoimport(void) {
     printf("✓ test_sns_manifest_autoimport passed\n");
 }
 
+static void test_builtin_type_ranking(void) {
+    LspDocStore store;
+    lsp_docstore_init(&store);
+    LspAnalysisEngine engine;
+    lsp_engine_init(&engine, NULL);
+
+    const char *code =
+        "package main\n"
+        "\n"
+        "func test(u: str): unit {\n"
+        "}\n";
+    LspDocument *doc = lsp_docstore_open(&store, "file:///builtin.snl", 1, code, strlen(code));
+    assert(doc != NULL);
+
+    LspPosition pos = { .line = 2, .character = 16 };
+    char *json_res = lsp_completion_query(&engine, &store, doc, pos);
+    assert(json_res != NULL);
+    JsonPool *pool = json_pool_create(strlen(json_res) + 1024);
+    const char *err = NULL;
+    JsonVal *root = json_parse(pool, json_res, strlen(json_res), &err);
+    assert(root != NULL);
+    const JsonVal *items = json_get_arr(root, "items");
+    assert(items != NULL);
+    assert(json_arr_len(items) > 0);
+    assert(strcmp(json_get_str(json_arr_at(items, 0), "label", ""), "string") == 0);
+    json_pool_destroy(pool);
+    free(json_res);
+
+    const char *bare =
+        "package main\n"
+        "\n"
+        "func test(u: ): unit {\n"
+        "}\n";
+    LspDocument *doc_bare = lsp_docstore_open(&store, "file:///builtin-bare.snl", 1, bare, strlen(bare));
+    assert(doc_bare != NULL);
+    LspPosition pos_bare = { .line = 2, .character = 13 };
+    char *json_bare = lsp_completion_query(&engine, &store, doc_bare, pos_bare);
+    assert(json_bare != NULL);
+    JsonPool *pool_bare = json_pool_create(strlen(json_bare) + 1024);
+    JsonVal *root_bare = json_parse(pool_bare, json_bare, strlen(json_bare), &err);
+    assert(root_bare != NULL);
+    const JsonVal *bare_items = json_get_arr(root_bare, "items");
+    assert(bare_items != NULL);
+    static const char *catalog[] = {
+        "int", "long", "int8", "int16", "int32", "int64", "int128",
+        "byte", "float", "double", "decimal", "bool", "char", "string", "unit", "any"
+    };
+    for (size_t i = 0; i < sizeof(catalog) / sizeof(catalog[0]); i++) {
+        assert(completion_has_label(bare_items, catalog[i], NULL));
+    }
+    json_pool_destroy(pool_bare);
+    free(json_bare);
+
+    const char *wide =
+        "package main\n"
+        "\n"
+        "func test(u: int3): unit {\n"
+        "}\n";
+    LspDocument *doc2 = lsp_docstore_open(&store, "file:///builtin-wide.snl", 1, wide, strlen(wide));
+    assert(doc2 != NULL);
+    LspPosition pos2 = { .line = 2, .character = 17 };
+    char *json2 = lsp_completion_query(&engine, &store, doc2, pos2);
+    assert(json2 != NULL);
+    JsonPool *pool2 = json_pool_create(strlen(json2) + 1024);
+    JsonVal *root2 = json_parse(pool2, json2, strlen(json2), &err);
+    assert(root2 != NULL);
+    const JsonVal *items2 = json_get_arr(root2, "items");
+    assert(items2 != NULL && json_arr_len(items2) > 0);
+    assert(strcmp(json_get_str(json_arr_at(items2, 0), "label", ""), "int32") == 0);
+    json_pool_destroy(pool2);
+    free(json2);
+
+    lsp_engine_destroy(&engine);
+    lsp_docstore_destroy(&store);
+    printf("✓ test_builtin_type_ranking passed\n");
+}
+
+static int semantic_type_at(const JsonVal *data, uint32_t line, uint32_t col) {
+    uint32_t cur_line = 0;
+    uint32_t cur_col = 0;
+    size_t n = json_arr_len(data);
+    for (size_t i = 0; i + 4 < n; i += 5) {
+        uint32_t dl = (uint32_t)json_arr_at(data, i)->num_val;
+        uint32_t ds = (uint32_t)json_arr_at(data, i + 1)->num_val;
+        uint32_t len = (uint32_t)json_arr_at(data, i + 2)->num_val;
+        uint32_t ty = (uint32_t)json_arr_at(data, i + 3)->num_val;
+        cur_line += dl;
+        cur_col = dl ? ds : cur_col + ds;
+        if (cur_line == line && col >= cur_col && col < cur_col + len) {
+            return (int)ty;
+        }
+    }
+    return -1;
+}
+
+static void test_builtin_type_highlight(void) {
+    LspDocStore store;
+    lsp_docstore_init(&store);
+    LspAnalysisEngine engine;
+    lsp_engine_init(&engine, NULL);
+
+    const char *code =
+        "package main\n"
+        "\n"
+        "struct Message {\n"
+        "    message: string\n"
+        "}\n"
+        "\n"
+        "public func main(): int {\n"
+        "    return 1;\n"
+        "}\n";
+    LspDocument *doc = lsp_docstore_open(&store, "file:///highlight.snl", 1, code, strlen(code));
+    assert(doc != NULL);
+    char *json_res = lsp_semantic_tokens_query(&engine, doc);
+    assert(json_res != NULL);
+    JsonPool *pool = json_pool_create(strlen(json_res) + 1024);
+    const char *err = NULL;
+    JsonVal *root = json_parse(pool, json_res, strlen(json_res), &err);
+    assert(root != NULL);
+    const JsonVal *data = json_get_arr(root, "data");
+    assert(data != NULL);
+    assert(semantic_type_at(data, 3, 13) == (int)LSP_SEMANTIC_TYPE_TYPE);
+    assert(semantic_type_at(data, 6, 20) == (int)LSP_SEMANTIC_TYPE_TYPE);
+    json_pool_destroy(pool);
+    free(json_res);
+    lsp_engine_destroy(&engine);
+    lsp_docstore_destroy(&store);
+    printf("✓ test_builtin_type_highlight passed\n");
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -944,6 +1075,8 @@ int main(void) {
     test_document_symbol_ranges();
     test_completion_on_source_and_script();
     test_sns_manifest_autoimport();
-    printf("All completion and code action tests passed successfully! (10/10)\n");
+    test_builtin_type_ranking();
+    test_builtin_type_highlight();
+    printf("All completion and code action tests passed successfully! (12/12)\n");
     return 0;
 }
