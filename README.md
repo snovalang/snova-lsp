@@ -35,3 +35,8 @@ The LSP server automatically parses documentation formatted as:
  * -- Returns: Return description.
  */
 ```
+
+## License
+
+This project is licensed under the [Apache License, Version 2.0](LICENSE).
+Copyright 2026 Snovalang contributors. See [NOTICE](NOTICE).
