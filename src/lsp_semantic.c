@@ -92,7 +92,12 @@ char *lsp_semantic_tokens_query(LspAnalysisEngine *engine, const LspDocument *do
         } else if (tok->kind == SN_TOK_FUNC || tok->kind == SN_TOK_METHOD) {
             type = LSP_SEMANTIC_TYPE_KEYWORD;
         } else if (tok->kind == SN_TOK_IDENT) {
-            if (tok->text && isupper((unsigned char)tok->text[0])) {
+            /* Primitive names are identifiers. Marking them as variables
+             * overrides the grammar color and makes `int` and `string` look
+             * unresolved. */
+            if (tok->text && sn_builtin_is_primitive_name(tok->text)) {
+                type = LSP_SEMANTIC_TYPE_TYPE;
+            } else if (tok->text && isupper((unsigned char)tok->text[0])) {
                 type = LSP_SEMANTIC_TYPE_TYPE;
             } else if (i + 1 < a->tokens.len && a->tokens.data[i + 1].kind == SN_TOK_LPAREN) {
                 type = LSP_SEMANTIC_TYPE_FUNCTION;

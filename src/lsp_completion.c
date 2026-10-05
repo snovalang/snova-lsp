@@ -488,19 +488,19 @@ static void add_keywords_and_snippets(CompList *list, ComplContext ctx, bool has
         return;
     }
 
-    int type_score = (ctx == CTX_TYPE_POS) ? 95 : 65;
-    int type_bonus = (ctx == CTX_TYPE_POS) ? 30 : 0;
+    /* In a type position primitives outrank named types. Elsewhere they sit
+     * just under locals and declarations, so an empty completion still shows
+     * `int` and `string` without burying the names in scope. Prefix ranking
+     * then lifts an exact or prefix match. */
+    int type_score = (ctx == CTX_TYPE_POS) ? 100 : 76;
+    int type_bonus = (ctx == CTX_TYPE_POS) ? 40 : 0;
 
-    // Builtin Primitive Types
-    complist_add(list, "int", LSP_COMPLETION_KEYWORD, "type", "64-bit signed integer", "int", 1, NULL, type_score, type_bonus);
-    complist_add(list, "long", LSP_COMPLETION_KEYWORD, "type", "64-bit signed integer", "long", 1, NULL, type_score, type_bonus);
-    complist_add(list, "double", LSP_COMPLETION_KEYWORD, "type", "64-bit IEEE 754 floating point", "double", 1, NULL, type_score, type_bonus);
-    complist_add(list, "decimal", LSP_COMPLETION_KEYWORD, "type", "High-precision decimal number", "decimal", 1, NULL, type_score, type_bonus);
-    complist_add(list, "string", LSP_COMPLETION_KEYWORD, "type", "UTF-8 immutable string", "string", 1, NULL, type_score, type_bonus);
-    complist_add(list, "bool", LSP_COMPLETION_KEYWORD, "type", "Boolean true or false", "bool", 1, NULL, type_score, type_bonus);
-    complist_add(list, "char", LSP_COMPLETION_KEYWORD, "type", "Unicode character", "char", 1, NULL, type_score, type_bonus);
-    complist_add(list, "byte", LSP_COMPLETION_KEYWORD, "type", "8-bit unsigned byte", "byte", 1, NULL, type_score, type_bonus);
-    complist_add(list, "unit", LSP_COMPLETION_KEYWORD, "type", "Unit / void return type", "unit", 1, NULL, type_score, type_bonus);
+    for (size_t i = 0; i < sn_builtin_primitive_count(); i++) {
+        const char *name = sn_builtin_primitive_name(i);
+        const char *detail = sn_builtin_primitive_detail(i);
+        if (!name) continue;
+        complist_add(list, name, LSP_COMPLETION_KEYWORD, "type", detail ? detail : "primitive type", name, 1, NULL, type_score, type_bonus);
+    }
     complist_add(list, "List", LSP_COMPLETION_CLASS, "type List<T>", "Dynamic array collection", "List<${1:T}>", 2, NULL, type_score, type_bonus);
     complist_add(list, "Map", LSP_COMPLETION_CLASS, "type Map<K, V>", "Key-value hash map", "Map<${1:K}, ${2:V}>", 2, NULL, type_score, type_bonus);
     complist_add(list, "Option", LSP_COMPLETION_ENUM, "enum Option<T>", "Optional value: Some(T) or None", "Option<${1:T}>", 2, NULL, type_score, type_bonus);

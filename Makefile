@@ -6,9 +6,11 @@ BUILD ?= build
 
 SNOVAC_DIR ?= ../snovac
 SNOVAC_LIB ?= $(SNOVAC_DIR)/build/libsnovart.a
-SNOVAC_CHECK_OBJ ?= $(SNOVAC_DIR)/build/cmd_check.o
 
-INCLUDES = -Isrc -I$(SNOVAC_DIR)
+INCLUDES = -Isrc \
+	-I$(SNOVAC_DIR)/src/base -I$(SNOVAC_DIR)/src/lex -I$(SNOVAC_DIR)/src/parse \
+	-I$(SNOVAC_DIR)/src/ast -I$(SNOVAC_DIR)/src/sema -I$(SNOVAC_DIR)/src/eval \
+	-I$(SNOVAC_DIR)/src/bc -I$(SNOVAC_DIR)/src/native -I$(SNOVAC_DIR)/src/driver
 
 ifeq ($(OS),Windows_NT)
   EXE := .exe
@@ -57,10 +59,10 @@ $(BUILD)/%.o: src/%.c | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARN) $(INCLUDES) -c -o $@ $<
 
 $(BIN): $(OBJS) $(SNOVAC_LIB) | $(BIN_DIR)
-	$(CC) $(CFLAGS) -o $@ $(OBJS) $(SNOVAC_CHECK_OBJ) $(SNOVAC_LIB) $(EXTRA_LIBS)
+	$(CC) $(CFLAGS) -o $@ $(OBJS) $(SNOVAC_LIB) $(EXTRA_LIBS)
 
 $(TEST_BIN): tests/test_completion.c $(filter-out $(BUILD)/main.o,$(OBJS)) $(SNOVAC_LIB) | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARN) $(INCLUDES) -o $@ tests/test_completion.c $(filter-out $(BUILD)/main.o,$(OBJS)) $(SNOVAC_CHECK_OBJ) $(SNOVAC_LIB) $(EXTRA_LIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARN) $(INCLUDES) -o $@ tests/test_completion.c $(filter-out $(BUILD)/main.o,$(OBJS)) $(SNOVAC_LIB) $(EXTRA_LIBS)
 
 test: $(TEST_BIN)
 	./$(TEST_BIN)

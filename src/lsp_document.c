@@ -36,7 +36,7 @@ char *lsp_uri_to_path(const char *uri) {
     raw[w] = '\0';
 
     char norm[SNOVAC_PATH_MAX];
-    normalize_path_into(raw, norm, sizeof(norm));
+    sn_driver_normalize_path(raw, norm, sizeof(norm));
     free(raw);
     return strdup(norm[0] ? norm : p);
 }
@@ -47,7 +47,7 @@ char *lsp_path_to_uri(const char *path) {
         return strdup(path);
     }
     char norm[SNOVAC_PATH_MAX];
-    normalize_path_into(path, norm, sizeof(norm));
+    sn_driver_normalize_path(path, norm, sizeof(norm));
     const char *p = norm[0] ? norm : path;
     size_t len = strlen(p);
     char *uri = (char *)malloc(8 + len * 3 + 1);
@@ -185,11 +185,11 @@ LspDocument *lsp_docstore_get(LspDocStore *store, const char *uri) {
 LspDocument *lsp_docstore_get_by_path(LspDocStore *store, const char *path) {
     if (!store || !path) return NULL;
     char norm[SNOVAC_PATH_MAX];
-    normalize_path_into(path, norm, sizeof(norm));
+    sn_driver_normalize_path(path, norm, sizeof(norm));
     for (size_t i = 0; i < store->len; i++) {
         if (!store->docs[i]->path) continue;
         char doc_norm[SNOVAC_PATH_MAX];
-        normalize_path_into(store->docs[i]->path, doc_norm, sizeof(doc_norm));
+        sn_driver_normalize_path(store->docs[i]->path, doc_norm, sizeof(doc_norm));
 #ifdef _WIN32
         if (strcasecmp(norm, doc_norm) == 0) return store->docs[i];
 #else
