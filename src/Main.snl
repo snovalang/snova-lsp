@@ -1,0 +1,180 @@
+package Snova.LspApp
+
+import builtin.io.console.output
+import Snova.Lsp
+
+/* -- Doc:{assertEq}
+ *
+ * -- Description: Soft assertion helper for the determinism self-test.
+ */
+func assertEq(name: string, got: string, want: string): int {
+    if got == want {
+        Console.printline("PASS " + name)
+        return 0
+    }
+    Console.printline("FAIL " + name)
+    Console.printline("  got:  " + got)
+    Console.printline("  want: " + want)
+    return 1
+}
+
+func assertTrue(name: string, cond: bool): int {
+    if cond {
+        Console.printline("PASS " + name)
+        return 0
+    }
+    Console.printline("FAIL " + name)
+    return 1
+}
+
+/* -- Doc:{runTwice}
+ *
+ * -- Description: Evaluates a pure encoding twice and requires byte identity.
+ */
+func runTwice(name: string, a: string, b: string): int {
+    return assertEq(name, a, b)
+}
+
+func testJsonAndRpc(): int {
+    var fails = 0
+    let jb = JsonBuilder.new()
+    jb.startObj()
+    jb.kvStr("jsonrpc", "2.0")
+    jb.kvInt("id", 1)
+    jb.key("result")
+    jb.startObj()
+    jb.kvStr("msg", "ok\n")
+    jb.endObj()
+    jb.endObj()
+    let once = jb.toString()
+    let jb2 = JsonBuilder.new()
+    jb2.startObj()
+    jb2.kvStr("jsonrpc", "2.0")
+    jb2.kvInt("id", 1)
+    jb2.key("result")
+    jb2.startObj()
+    jb2.kvStr("msg", "ok\n")
+    jb2.endObj()
+    jb2.endObj()
+    fails = fails + runTwice("json-escape-stable", once, jb2.toString())
+    fails = fails + assertEq(
+        "json-escape-value",
+        once,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"msg\":\"ok\\n\"}}"
+    )
+
+    let initA = RpcCodec.initializeResult("snova-lsp", LspVersion.current())
+    let initB = RpcCodec.initializeResult("snova-lsp", LspVersion.current())
+    fails = fails + runTwice("initialize-result-stable", initA, initB)
+
+    let okA = RpcCodec.ok(7, initA)
+    let okB = RpcCodec.ok(7, initB)
+    fails = fails + runTwice("rpc-ok-stable", okA, okB)
+    return fails
+}
+
+func testTransport(): int {
+    var fails = 0
+    let body = "{\"id\":1}"
+    let framed = LspFraming.formatMessage(body)
+    let again = LspFraming.formatMessage(body)
+    fails = fails + runTwice("frame-stable", framed, again)
+    fails = fails + assertEq(
+        "frame-bytes",
+        framed,
+        "Content-Length: 8\r\n\r\n{\"id\":1}"
+    )
+    match LspFraming.parseContentLength("Content-Length: 42\r\n") {
+        Some(n) -> { fails = fails + assertTrue("parse-cl", n == 42) }
+        None -> { fails = fails + assertTrue("parse-cl", false) }
+    }
+    match LspFraming.parseContentLength("content-length: 7\n") {
+        Some(n) -> { fails = fails + assertTrue("parse-cl-ci", n == 7) }
+        None -> { fails = fails + assertTrue("parse-cl-ci", false) }
+    }
+    return fails
+}
+
+func testUriAndDocument(): int {
+    var fails = 0
+    let uri = UriCodec.pathToUri("/tmp/demo file.snl")
+    let uri2 = UriCodec.pathToUri("/tmp/demo file.snl")
+    fails = fails + runTwice("uri-encode-stable", uri, uri2)
+    fails = fails + assertEq("uri-encode", uri, "file:///tmp/demo%20file.snl")
+    fails = fails + assertEq("uri-decode", UriCodec.uriToPath(uri), "/tmp/demo file.snl")
+
+    let text = "line0\nline1\n"
+    let idx = LineIndex.fromText(text)
+    fails = fails + assertTrue("line-count", idx.lineCount() == 3)
+    let p = idx.positionAt(6)
+    fails = fails + assertTrue("pos-line", p.line == 1)
+    fails = fails + assertTrue("pos-col", p.character == 0)
+    fails = fails + assertTrue("offset-roundtrip", idx.offsetAt(p) == 6)
+    return fails
+}
+
+func rankLabels(prefix: string): string {
+    var items: Array<CompletionItem> = []
+    items.push(CompletionItem.new("printline", 2, 50, 0))
+    items.push(CompletionItem.new("print", 2, 50, 0))
+    items.push(CompletionItem.new("Point", 7, 40, 0))
+    items.push(CompletionItem.new("nope", 1, 10, 0))
+    let ranked = CompletionRanker.rankAndSort(items, prefix)
+    var out = LspUtil.intToString(ranked.len())
+    var i = 0
+    while i < ranked.len() {
+        out = out + "|" + ranked.get(i).label
+        i = i + 1
+    }
+    return out
+}
+
+func testCompletionRank(): int {
+    var fails = 0
+    let once = rankLabels("prin")
+    let twice = rankLabels("prin")
+    fails = fails + assertEq("rank-order", once, "2|print|printline")
+    fails = fails + runTwice("rank-stable", once, twice)
+    fails = fails + assertEq("sortText-0", CompletionRanker.sortTextForIndex(0), "00000")
+    fails = fails + assertEq("sortText-1", CompletionRanker.sortTextForIndex(1), "00001")
+    return fails
+}
+
+func testSemanticEncode(): int {
+    var fails = 0
+    var tokens: Array<SemanticToken> = []
+    tokens.push(SemanticToken.new(1, 4, 3, 8, 0))
+    tokens.push(SemanticToken.new(0, 0, 5, 15, 0))
+    tokens.push(SemanticToken.new(1, 0, 3, 14, 0))
+    let encA = SemanticEncoder.encodeDataArray(tokens)
+
+    var tokensB: Array<SemanticToken> = []
+    tokensB.push(SemanticToken.new(1, 4, 3, 8, 0))
+    tokensB.push(SemanticToken.new(0, 0, 5, 15, 0))
+    tokensB.push(SemanticToken.new(1, 0, 3, 14, 0))
+    let encB = SemanticEncoder.encodeDataArray(tokensB)
+    fails = fails + runTwice("semantic-stable", encA, encB)
+    // After sort: (0,0), (1,0), (1,4) → deltas 0,0,5,15,0 / 1,0,3,14,0 / 0,4,3,8,0
+    fails = fails + assertEq(
+        "semantic-deltas",
+        encA,
+        "{\"data\":[0,0,5,15,0,1,0,3,14,0,0,4,3,8,0]}"
+    )
+    return fails
+}
+
+func main(): int {
+    Console.printline("snova-lsp snl self-test (deterministic)")
+    var fails = 0
+    fails = fails + testJsonAndRpc()
+    fails = fails + testTransport()
+    fails = fails + testUriAndDocument()
+    fails = fails + testCompletionRank()
+    fails = fails + testSemanticEncode()
+    if fails == 0 {
+        Console.printline("ALL PASS")
+        return 0
+    }
+    Console.printline("FAILURES=" + LspUtil.intToString(fails))
+    return 1
+}
