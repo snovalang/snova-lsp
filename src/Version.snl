@@ -12,6 +12,6 @@ public class LspVersion {
      * -- Returns: Version string identical to the repository VERSION file.
      */
     public static method current(): string {
-        return "1.0.4"
+        return "1.0.5"
     }
 }
