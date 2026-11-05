@@ -4,6 +4,10 @@ CPPFLAGS ?= -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -D_DARWIN_C_SOURCE
 WARN = -Wall -Wextra -Wpedantic -Wshadow -Wno-sign-conversion
 BUILD ?= build
 
+# Single source of truth for serverInfo.version (see VERSION + src/Version.snl).
+LSP_VERSION := $(shell tr -d ' \n\r\t' < VERSION 2>/dev/null || printf '0.0.0')
+CPPFLAGS += -DLSP_VERSION=\"$(LSP_VERSION)\"
+
 SNOVAC_DIR ?= ../snovac
 SNOVAC_LIB ?= $(SNOVAC_DIR)/build/libsnovart.a
 

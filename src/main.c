@@ -376,7 +376,10 @@ int main(int argc, char **argv) {
             jb_key(&res, "serverInfo");
             jb_start_obj(&res);
             jb_kv_str(&res, "name", "snova-lsp");
-            jb_kv_str(&res, "version", "1.0.0");
+#ifndef LSP_VERSION
+#define LSP_VERSION "0.0.0"
+#endif
+            jb_kv_str(&res, "version", LSP_VERSION);
             jb_end_obj(&res);
 
             jb_end_obj(&res);
