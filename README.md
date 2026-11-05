@@ -18,6 +18,8 @@ IDE-agnostic Language Server Protocol (LSP) server for Snovalang based on the `s
 
 Pure LSP logic is moving from C into `src/*.snl` under package `Snova.Lsp` (protocol models, JSON writer, Content-Length framing, URI codec, line index, completion ranking, semantic delta encoding, RPC shaping). The production stdio server and snovac analysis bridge remain in C for now (`TODO(SL-2)` markers).
 
+Builtin types: snl modules use the snovac release Builtin surface (`Array`, `Option`, `Result`, `Text`, primitive `toString` / `toLower` / string indexing) instead of parallel helper catalogs. Prefer `builtin.*` packages over bespoke utilities.
+
 Versioning: bump the root `VERSION` file and `src/Version.snl` in the **same commit** as each migrated or new feature. The C binary embeds `VERSION` via `-DLSP_VERSION` for `serverInfo.version`.
 
 Determinism: same inputs produce the same outputs — insertion-ordered JSON keys, insertion-sort ranking with zero-padded `sortText`, index-sorted semantic tokens, and no wall-clock or hash-map ordering.

@@ -1,74 +1,129 @@
 package Snova.Lsp
 
+import builtin.core.types.values
+import builtin.text.text.values
+
 /* -- Doc:{LspUtil}
  *
- * -- Description: Deterministic string and integer helpers for the Snovalang LSP.
- *   No wall-clock, randomness, or hash-order dependence. Integer formatting and
- *   ASCII lexicographic compare are pure functions of their inputs.
+ * -- Description: LSP helpers layered on release Builtin types
+ *   (`int.toString`, `Text.padLeft`, `string.toLower` / indexing, `Option`).
+ *   ASCII ordinal maps remain explicit so URI percent-encoding and JSON
+ *   `\\u00XX` escapes stay byte-accurate and deterministic.
  */
 public class LspUtil {
     /* -- Doc:{intToString}
      *
-     * -- Description: Formats a signed int in base 10 with a fixed digit alphabet.
-     *
-     * -- Param{val}: Integer to format.
-     * -- Returns: Decimal string (no leading zeros except for zero itself).
+     * -- Description: Formats an int via Builtin primitive `toString()`.
      */
     public static method intToString(val: int): string {
-        if val == 0 {
-            return "0"
-        }
-        var n = val
-        var neg = false
-        if n < 0 {
-            neg = true
-            n = 0 - n
-        }
-        var digits = ""
-        while n > 0 {
-            let rem = n % 10
-            var c = "0"
-            if rem == 1 { c = "1" }
-            if rem == 2 { c = "2" }
-            if rem == 3 { c = "3" }
-            if rem == 4 { c = "4" }
-            if rem == 5 { c = "5" }
-            if rem == 6 { c = "6" }
-            if rem == 7 { c = "7" }
-            if rem == 8 { c = "8" }
-            if rem == 9 { c = "9" }
-            digits = c + digits
-            n = n / 10
-        }
-        if neg {
-            return "-" + digits
-        }
-        return digits
+        return val.toString()
     }
 
     /* -- Doc:{padLeftZeros}
      *
-     * -- Description: Left-pads a decimal string with '0' to a fixed width for stable sortText.
-     *
-     * -- Param{val}: Non-negative integer.
-     * -- Param{width}: Minimum digit width.
-     * -- Returns: Zero-padded decimal string.
+     * -- Description: Zero-pads via Builtin `Text.padLeft`.
      */
     public static method padLeftZeros(val: int, width: int): string {
-        var s = LspUtil.intToString(val)
-        while s.len() < width {
-            s = "0" + s
+        return Text.padLeft(val.toString(), width, "0")
+    }
+
+    /* -- Doc:{toLowerAscii}
+     *
+     * -- Description: Lowercases via Builtin `string.toLower()`.
+     */
+    public static method toLowerAscii(s: string): string {
+        return s.toLower()
+    }
+
+    /* -- Doc:{charAt}
+     *
+     * -- Description: One-character string at index using Builtin string indexing.
+     */
+    public static method charAt(s: string, index: int): string {
+        if index < 0 || index >= s.length() {
+            return ""
         }
-        return s
+        return s[index].toString()
+    }
+
+    /* -- Doc:{digitValue}
+     *
+     * -- Description: Parses one decimal digit via Builtin `indexOf`, or -1.
+     */
+    public static method digitValue(c: string): int {
+        return "0123456789".indexOf(c)
+    }
+
+    /* -- Doc:{hexNibble}
+     *
+     * -- Description: Uppercase hex digit for 0..15 via Builtin string indexing.
+     */
+    public static method hexNibble(n: int): string {
+        if n < 0 || n > 15 {
+            return "0"
+        }
+        return "0123456789ABCDEF"[n].toString()
+    }
+
+    /* -- Doc:{hexValue}
+     *
+     * -- Description: Parses one hex character to 0..15, or -1 when invalid.
+     */
+    public static method hexValue(c: string): int {
+        let idx = "0123456789ABCDEFabcdef".indexOf(c)
+        if idx < 0 {
+            return 0 - 1
+        }
+        if idx >= 16 {
+            return idx - 6
+        }
+        return idx
+    }
+
+    /* -- Doc:{parsePositiveInt}
+     *
+     * -- Description: Parses an unsigned decimal into Builtin `Option<int>`.
+     */
+    public static method parsePositiveInt(s: string): Option<int> {
+        if s.isEmpty() {
+            return None
+        }
+        var result = 0
+        var i = 0
+        while i < s.length() {
+            let d = LspUtil.digitValue(LspUtil.charAt(s, i))
+            if d < 0 {
+                return None
+            }
+            result = result * 10 + d
+            i = i + 1
+        }
+        return Some(result)
+    }
+
+    /* -- Doc:{cmpStr}
+     *
+     * -- Description: Deterministic lexicographic ASCII compare.
+     */
+    public static method cmpStr(a: string, b: string): int {
+        var i = 0
+        let al = a.length()
+        let bl = b.length()
+        while i < al && i < bl {
+            let oa = LspUtil.asciiOrd(LspUtil.charAt(a, i))
+            let ob = LspUtil.asciiOrd(LspUtil.charAt(b, i))
+            if oa < ob { return 0 - 1 }
+            if oa > ob { return 1 }
+            i = i + 1
+        }
+        if al < bl { return 0 - 1 }
+        if al > bl { return 1 }
+        return 0
     }
 
     /* -- Doc:{asciiOrd}
      *
-     * -- Description: Maps a single ASCII character string to its code point.
-     *   Unknown characters map to 0 so ordering stays deterministic.
-     *
-     * -- Param{c}: One-character string.
-     * -- Returns: ASCII ordinal in 0..127, or 0 when unmapped.
+     * -- Description: Maps a one-character string to its ASCII code point.
      */
     public static method asciiOrd(c: string): int {
         if c == "\t" { return 9 }
@@ -172,62 +227,9 @@ public class LspUtil {
         return 0
     }
 
-    /* -- Doc:{cmpStr}
-     *
-     * -- Description: Lexicographic ASCII compare. Negative when a < b, zero when
-     *   equal, positive when a > b. Same inputs always yield the same result.
-     *
-     * -- Param{a}: Left string.
-     * -- Param{b}: Right string.
-     * -- Returns: Signed comparison result.
-     */
-    public static method cmpStr(a: string, b: string): int {
-        var i = 0
-        let al = a.len()
-        let bl = b.len()
-        while i < al && i < bl {
-            let oa = LspUtil.asciiOrd(a.substring(i, i + 1))
-            let ob = LspUtil.asciiOrd(b.substring(i, i + 1))
-            if oa < ob { return 0 - 1 }
-            if oa > ob { return 1 }
-            i = i + 1
-        }
-        if al < bl { return 0 - 1 }
-        if al > bl { return 1 }
-        return 0
-    }
-
-    /* -- Doc:{toLowerAscii}
-     *
-     * -- Description: Lowercases A-Z; leaves every other character unchanged.
-     *
-     * -- Param{s}: Input string.
-     * -- Returns: Lowercased ASCII string.
-     */
-    public static method toLowerAscii(s: string): string {
-        var out = ""
-        var i = 0
-        while i < s.len() {
-            let c = s.substring(i, i + 1)
-            let o = LspUtil.asciiOrd(c)
-            if o >= 65 && o <= 90 {
-                // 'a' is 97; offset from 'A'
-                let lower = o + 32
-                out = out + LspUtil.chrAscii(lower)
-            } else {
-                out = out + c
-            }
-            i = i + 1
-        }
-        return out
-    }
-
     /* -- Doc:{chrAscii}
      *
-     * -- Description: Inverse of asciiOrd for the printable ASCII range used by the LSP.
-     *
-     * -- Param{o}: Ordinal 9..126.
-     * -- Returns: One-character string, or empty when unmapped.
+     * -- Description: Inverse of asciiOrd for the printable ASCII range.
      */
     public static method chrAscii(o: int): string {
         if o == 9 { return "\t" }
@@ -329,32 +331,5 @@ public class LspUtil {
         if o == 125 { return "}" }
         if o == 126 { return "~" }
         return ""
-    }
-
-    /* -- Doc:{hexNibble}
-     *
-     * -- Description: Formats a value 0..15 as an uppercase hex digit.
-     *
-     * -- Param{n}: Nibble value.
-     * -- Returns: One hex character.
-     */
-    public static method hexNibble(n: int): string {
-        if n == 0 { return "0" }
-        if n == 1 { return "1" }
-        if n == 2 { return "2" }
-        if n == 3 { return "3" }
-        if n == 4 { return "4" }
-        if n == 5 { return "5" }
-        if n == 6 { return "6" }
-        if n == 7 { return "7" }
-        if n == 8 { return "8" }
-        if n == 9 { return "9" }
-        if n == 10 { return "A" }
-        if n == 11 { return "B" }
-        if n == 12 { return "C" }
-        if n == 13 { return "D" }
-        if n == 14 { return "E" }
-        if n == 15 { return "F" }
-        return "0"
     }
 }

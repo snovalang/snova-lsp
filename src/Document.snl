@@ -1,10 +1,11 @@
 package Snova.Lsp
 
+import builtin.collections.collections.types
 
 /* -- Doc:{LineIndex}
  *
- * -- Description: Deterministic line-offset table for a document snapshot.
- *   Line 0 always starts at offset 0. Offsets advance past each '\\n'.
+ * -- Description: Deterministic line-offset table for a document snapshot using
+ *   Builtin `Array<int>` storage. Line 0 always starts at offset 0.
  */
 public class LineIndex {
     private var offsets: Array<int>
@@ -14,8 +15,8 @@ public class LineIndex {
         var offsets: Array<int> = []
         offsets.push(0)
         var i = 0
-        while i < text.len() {
-            if text.substring(i, i + 1) == "\n" {
+        while i < text.length() {
+            if LspUtil.charAt(text, i) == "\n" {
                 offsets.push(i + 1)
             }
             i = i + 1
@@ -24,33 +25,26 @@ public class LineIndex {
     }
 
     public method lineCount(): int {
-        return this.offsets.len()
+        return this.offsets.length()
     }
 
     public method offsetOfLine(line: int): int {
         if line < 0 {
             return 0
         }
-        if line >= this.offsets.len() {
-            return this.text.len()
+        if line >= this.offsets.length() {
+            return this.text.length()
         }
         return this.offsets.get(line)
     }
 
-    /* -- Doc:{positionAt}
-     *
-     * -- Description: Converts a byte offset into a zero-based Position.
-     *
-     * -- Param{offset}: Absolute offset into the document text.
-     * -- Returns: Position with character counted in UTF-8 bytes (same as C host).
-     */
     public method positionAt(offset: int): Position {
         var off = offset
         if off < 0 { off = 0 }
-        if off > this.text.len() { off = this.text.len() }
+        if off > this.text.length() { off = this.text.length() }
         var line = 0
         var i = 0
-        while i < this.offsets.len() {
+        while i < this.offsets.length() {
             if this.offsets.get(i) <= off {
                 line = i
             } else {
@@ -62,14 +56,10 @@ public class LineIndex {
         return Position.new(line, off - start)
     }
 
-    /* -- Doc:{offsetAt}
-     *
-     * -- Description: Converts a Position into a byte offset, clamped to the line.
-     */
     public method offsetAt(pos: Position): int {
         let start = this.offsetOfLine(pos.line)
-        var end = this.text.len()
-        if pos.line + 1 < this.offsets.len() {
+        var end = this.text.length()
+        if pos.line + 1 < this.offsets.length() {
             end = this.offsets.get(pos.line + 1) - 1
             if end < start { end = start }
         }
@@ -77,7 +67,7 @@ public class LineIndex {
         if col < 0 { col = 0 }
         let cand = start + col
         if cand > end { return end }
-        if cand > this.text.len() { return this.text.len() }
+        if cand > this.text.length() { return this.text.length() }
         return cand
     }
 }

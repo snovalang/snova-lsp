@@ -1,31 +1,23 @@
 package Snova.Lsp
 
-
 /* -- Doc:{UriCodec}
  *
  * -- Description: Deterministic file URI encode/decode for POSIX paths.
- *   Encoding uses uppercase %XX for non-unreserved octets. Decoding accepts
- *   either case. Windows drive-letter handling stays in the C host for now.
+ *   Encoding uses uppercase %XX for non-unreserved octets via Builtin string
+ *   indexing helpers. Decoding accepts either hex case.
  */
 public class UriCodec {
-    /* -- Doc:{pathToUri}
-     *
-     * -- Description: Converts an absolute or relative POSIX path to a file URI.
-     *
-     * -- Param{path}: Filesystem path (already normalized by the host when possible).
-     * -- Returns: file:// URI string.
-     */
     public static method pathToUri(path: string): string {
         if path.startsWith("file://") {
             return path
         }
         var uri = "file://"
-        if path.len() == 0 || path.substring(0, 1) != "/" {
+        if path.length() == 0 || LspUtil.charAt(path, 0) != "/" {
             uri = uri + "/"
         }
         var i = 0
-        while i < path.len() {
-            let c = path.substring(i, i + 1)
+        while i < path.length() {
+            let c = LspUtil.charAt(path, i)
             if UriCodec.isUnreserved(c) {
                 uri = uri + c
             } else {
@@ -37,25 +29,18 @@ public class UriCodec {
         return uri
     }
 
-    /* -- Doc:{uriToPath}
-     *
-     * -- Description: Strips the file:// prefix and percent-decodes the path.
-     *
-     * -- Param{uri}: Document URI.
-     * -- Returns: Decoded filesystem path.
-     */
     public static method uriToPath(uri: string): string {
         var p = uri
         if p.startsWith("file://") {
-            p = p.substring(7, p.len())
+            p = p.substring(7, p.length())
         }
         var out = ""
         var i = 0
-        while i < p.len() {
-            let c = p.substring(i, i + 1)
-            if c == "%" && i + 2 < p.len() {
-                let hi = UriCodec.hexValue(p.substring(i + 1, i + 2))
-                let lo = UriCodec.hexValue(p.substring(i + 2, i + 3))
+        while i < p.length() {
+            let c = LspUtil.charAt(p, i)
+            if c == "%" && i + 2 < p.length() {
+                let hi = LspUtil.hexValue(LspUtil.charAt(p, i + 1))
+                let lo = LspUtil.hexValue(LspUtil.charAt(p, i + 2))
                 if hi >= 0 && lo >= 0 {
                     out = out + LspUtil.chrAscii(hi * 16 + lo)
                     i = i + 3
@@ -73,20 +58,12 @@ public class UriCodec {
 
     private static method isUnreserved(c: string): bool {
         let o = LspUtil.asciiOrd(c)
-        if o >= 48 && o <= 57 { return true } // 0-9
-        if o >= 65 && o <= 90 { return true } // A-Z
-        if o >= 97 && o <= 122 { return true } // a-z
+        if o >= 48 && o <= 57 { return true }
+        if o >= 65 && o <= 90 { return true }
+        if o >= 97 && o <= 122 { return true }
         if c == "/" || c == "-" || c == "_" || c == "." || c == "~" || c == ":" {
             return true
         }
         return false
-    }
-
-    private static method hexValue(c: string): int {
-        let o = LspUtil.asciiOrd(c)
-        if o >= 48 && o <= 57 { return o - 48 }
-        if o >= 65 && o <= 70 { return o - 55 }
-        if o >= 97 && o <= 102 { return o - 87 }
-        return 0 - 1
     }
 }

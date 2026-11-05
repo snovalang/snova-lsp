@@ -1,6 +1,8 @@
 package Snova.LspApp
 
 import builtin.io.console.output
+import builtin.collections.collections.types
+import builtin.core.types.values
 import Snova.Lsp
 
 /* -- Doc:{assertEq}
@@ -120,9 +122,9 @@ func rankLabels(prefix: string): string {
     items.push(CompletionItem.new("Point", 7, 40, 0))
     items.push(CompletionItem.new("nope", 1, 10, 0))
     let ranked = CompletionRanker.rankAndSort(items, prefix)
-    var out = LspUtil.intToString(ranked.len())
+    var out = ranked.length().toString()
     var i = 0
-    while i < ranked.len() {
+    while i < ranked.length() {
         out = out + "|" + ranked.get(i).label
         i = i + 1
     }
@@ -175,6 +177,6 @@ func main(): int {
         Console.printline("ALL PASS")
         return 0
     }
-    Console.printline("FAILURES=" + LspUtil.intToString(fails))
+    Console.printline("FAILURES=" + fails.toString())
     return 1
 }

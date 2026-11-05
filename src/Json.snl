@@ -1,11 +1,9 @@
 package Snova.Lsp
 
-
 /* -- Doc:{JsonBuilder}
  *
- * -- Description: Deterministic JSON writer. Object members are emitted in
- *   insertion order (never hash-map order). Escaping uses a fixed table for
- *   control characters so the same logical values always stringify identically.
+ * -- Description: Deterministic JSON writer on Builtin string/int APIs.
+ *   Object members are emitted in insertion order (never hash-map order).
  */
 public class JsonBuilder {
     private var buf: string
@@ -73,7 +71,7 @@ public class JsonBuilder {
 
     public method intValue(v: int): unit {
         this.maybeComma()
-        this.buf = this.buf + LspUtil.intToString(v)
+        this.buf = this.buf + v.toString()
         this.needsComma = true
     }
 
@@ -112,8 +110,8 @@ public class JsonBuilder {
     private method writeString(v: string): unit {
         this.buf = this.buf + "\""
         var i = 0
-        while i < v.len() {
-            let c = v.substring(i, i + 1)
+        while i < v.length() {
+            let c = LspUtil.charAt(v, i)
             if c == "\"" {
                 this.buf = this.buf + "\\\""
             } else if c == "\\" {

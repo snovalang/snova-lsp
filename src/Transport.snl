@@ -7,52 +7,46 @@ import builtin.core.types.values
  * -- Description: Pure Content-Length framing helpers (LSP over stdio).
  *   Format and parse are deterministic string transforms with no I/O.
  *   Host stdin/stdout bridging remains in C until Runtime exposes byte streams.
+ *   Length formatting uses Builtin `int.toString()`; header parsing returns
+ *   Builtin `Option<int>`.
  */
 public class LspFraming {
     /* -- Doc:{formatMessage}
      *
      * -- Description: Wraps a JSON payload with a Content-Length CRLF header.
-     *
-     * -- Param{jsonPayload}: Exact JSON body bytes as a string.
-     * -- Returns: Framed message string.
      */
     public static method formatMessage(jsonPayload: string): string {
-        let lengthStr = LspUtil.intToString(jsonPayload.len())
+        let lengthStr = jsonPayload.length().toString()
         return "Content-Length: " + lengthStr + "\r\n\r\n" + jsonPayload
     }
 
     /* -- Doc:{parseContentLength}
      *
-     * -- Description: Reads the Content-Length header value from header text.
-     *   Header lines are scanned in order; the first matching line wins.
-     *
-     * -- Param{headerText}: Raw header block without the body.
-     * -- Returns: Some(length) or None when missing/invalid.
+     * -- Description: Reads the Content-Length header into Builtin `Option<int>`.
      */
     public static method parseContentLength(headerText: string): Option<int> {
-        // Manual line scan avoids relying on string.split across runtimes.
         var start = 0
         var i = 0
-        let n = headerText.len()
+        let n = headerText.length()
         while i <= n {
             var atEnd = false
             if i == n {
                 atEnd = true
-            } else if headerText.substring(i, i + 1) == "\n" {
+            } else if LspUtil.charAt(headerText, i) == "\n" {
                 atEnd = true
             }
             if atEnd {
                 var line = headerText.substring(start, i)
                 if line.endsWith("\r") {
-                    line = line.substring(0, line.len() - 1)
+                    line = line.substring(0, line.length() - 1)
                 }
                 line = line.trim()
                 let lower = line.toLower()
                 if lower.startsWith("content-length:") {
                     let colon = line.indexOf(":")
                     if colon >= 0 {
-                        let valStr = line.substring(colon + 1, line.len()).trim()
-                        return LspFraming.parsePositiveInt(valStr)
+                        let valStr = line.substring(colon + 1, line.length()).trim()
+                        return LspUtil.parsePositiveInt(valStr)
                     }
                 }
                 start = i + 1
@@ -60,23 +54,5 @@ public class LspFraming {
             i = i + 1
         }
         return None
-    }
-
-    private static method parsePositiveInt(s: string): Option<int> {
-        if s.isEmpty() {
-            return None
-        }
-        var result = 0
-        var i = 0
-        while i < s.len() {
-            let c = s.substring(i, i + 1)
-            let d = LspUtil.asciiOrd(c) - 48
-            if d < 0 || d > 9 {
-                return None
-            }
-            result = result * 10 + d
-            i = i + 1
-        }
-        return Some(result)
     }
 }
