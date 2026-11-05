@@ -5,6 +5,10 @@
 #define _DEFAULT_SOURCE
 #endif
 
+/* TODO(SL-2): JSON-RPC initialize / response shaping ported to src/Rpc.snl and
+ * src/Main.snl (determinism self-test). The production stdio server loop and
+ * snovac analysis bridge remain in C until snl owns byte-oriented I/O. */
+
 #include "lsp_protocol.h"
 #include "lsp_transport.h"
 #include "lsp_document.h"

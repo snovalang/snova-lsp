@@ -1,0 +1,116 @@
+package Snova.Lsp
+
+
+/* -- Doc:{RpcCodec}
+ *
+ * -- Description: Deterministic JSON-RPC 2.0 helpers for LSP responses.
+ *   Object keys are written in a fixed order so payloads are byte-stable.
+ */
+public class RpcCodec {
+    /* -- Doc:{ok}
+     *
+     * -- Description: Successful response with a raw JSON result value.
+     */
+    public static method ok(id: int, resultJson: string): string {
+        let jb = JsonBuilder.new()
+        jb.startObj()
+        jb.kvStr("jsonrpc", "2.0")
+        jb.kvInt("id", id)
+        jb.key("result")
+        jb.rawValue(resultJson)
+        jb.endObj()
+        return jb.toString()
+    }
+
+    /* -- Doc:{error}
+     *
+     * -- Description: Error response with a fixed key order (code, message).
+     */
+    public static method error(id: int, code: int, message: string): string {
+        let jb = JsonBuilder.new()
+        jb.startObj()
+        jb.kvStr("jsonrpc", "2.0")
+        jb.kvInt("id", id)
+        jb.key("error")
+        jb.startObj()
+        jb.kvInt("code", code)
+        jb.kvStr("message", message)
+        jb.endObj()
+        jb.endObj()
+        return jb.toString()
+    }
+
+    /* -- Doc:{initializeResult}
+     *
+     * -- Description: Fixed-capability InitializeResult used by the snl path.
+     *   Capability flags are literals (no runtime probing) for determinism.
+     */
+    public static method initializeResult(serverName: string, serverVersion: string): string {
+        let jb = JsonBuilder.new()
+        jb.startObj()
+        jb.key("capabilities")
+        jb.startObj()
+        jb.key("textDocumentSync")
+        jb.intValue(1) // Full
+        jb.kvBool("hoverProvider", true)
+        jb.kvBool("definitionProvider", true)
+        jb.kvBool("referencesProvider", true)
+        jb.kvBool("documentSymbolProvider", true)
+        jb.kvBool("completionProvider", true)
+        jb.key("semanticTokensProvider")
+        jb.startObj()
+        jb.key("legend")
+        jb.startObj()
+        jb.key("tokenTypes")
+        jb.startArr()
+        // Fixed legend order — must stay aligned with Protocol semantic type indices.
+        jb.strValue("namespace")
+        jb.strValue("type")
+        jb.strValue("class")
+        jb.strValue("enum")
+        jb.strValue("interface")
+        jb.strValue("struct")
+        jb.strValue("typeParameter")
+        jb.strValue("parameter")
+        jb.strValue("variable")
+        jb.strValue("property")
+        jb.strValue("enumMember")
+        jb.strValue("event")
+        jb.strValue("function")
+        jb.strValue("method")
+        jb.strValue("macro")
+        jb.strValue("keyword")
+        jb.strValue("modifier")
+        jb.strValue("comment")
+        jb.strValue("string")
+        jb.strValue("number")
+        jb.strValue("regexp")
+        jb.strValue("operator")
+        jb.strValue("decorator")
+        jb.endArr()
+        jb.key("tokenModifiers")
+        jb.startArr()
+        jb.strValue("declaration")
+        jb.strValue("definition")
+        jb.strValue("readonly")
+        jb.strValue("static")
+        jb.strValue("deprecated")
+        jb.strValue("abstract")
+        jb.strValue("async")
+        jb.strValue("modification")
+        jb.strValue("documentation")
+        jb.strValue("defaultLibrary")
+        jb.endArr()
+        jb.endObj()
+        jb.kvBool("full", true)
+        jb.endObj()
+        jb.endObj()
+        jb.key("serverInfo")
+        jb.startObj()
+        jb.kvStr("name", serverName)
+        jb.kvStr("version", serverVersion)
+        jb.endObj()
+        jb.endObj()
+        return jb.toString()
+    }
+}
