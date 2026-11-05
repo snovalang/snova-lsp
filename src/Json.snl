@@ -128,7 +128,7 @@ public class JsonBuilder {
                 this.buf = this.buf + "\\t"
             } else {
                 let o = LspUtil.asciiOrd(c)
-                if o > 0 && o < 32 {
+                if o >= 0 && o < 32 {
                     this.buf = this.buf + "\\u00" + LspUtil.hexNibble(o / 16) + LspUtil.hexNibble(o % 16)
                 } else {
                     this.buf = this.buf + c

@@ -80,11 +80,13 @@ test: $(TEST_BIN)
 test-snl:
 	@test -x "$(SNL)" || (echo "error: snl not found at $(SNL); build snovac first" >&2; exit 1)
 	@test -d "$(SNOVA_STD_PATH)" || (echo "error: builtins not found at $(SNOVA_STD_PATH)" >&2; exit 1)
-	@tmpdir=$$(mktemp -d /tmp/lspsnl.XXXXXX) && \
+	@snl_abs=$$(cd "$$(dirname "$(SNL)")" && pwd)/$$(basename "$(SNL)") && \
+	  std_abs=$$(cd "$(SNOVA_STD_PATH)" && pwd) && \
+	  tmpdir=$$(mktemp -d /tmp/lspsnl.XXXXXX) && \
 	  mkdir -p "$$tmpdir/src" && \
 	  cp src/*.snl "$$tmpdir/src/" && \
 	  cp mod.sns "$$tmpdir/" && \
-	  ( cd "$$tmpdir" && SNOVA_STD_PATH="$(SNOVA_STD_PATH)" "$(SNL)" run --project . ); \
+	  ( cd "$$tmpdir" && SNOVA_STD_PATH="$$std_abs" "$$snl_abs" run --project . ); \
 	  rc=$$?; rm -rf "$$tmpdir"; exit $$rc
 
 test-all: test test-snl

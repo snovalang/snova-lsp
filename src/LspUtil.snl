@@ -126,8 +126,10 @@ public class LspUtil {
      * -- Description: Maps a one-character string to its ASCII code point.
      */
     public static method asciiOrd(c: string): int {
+        if c == "\b" { return 8 }
         if c == "\t" { return 9 }
         if c == "\n" { return 10 }
+        if c == "\f" { return 12 }
         if c == "\r" { return 13 }
         if c == " " { return 32 }
         if c == "!" { return 33 }
@@ -232,8 +234,10 @@ public class LspUtil {
      * -- Description: Inverse of asciiOrd for the printable ASCII range.
      */
     public static method chrAscii(o: int): string {
+        if o == 8 { return "\b" }
         if o == 9 { return "\t" }
         if o == 10 { return "\n" }
+        if o == 12 { return "\f" }
         if o == 13 { return "\r" }
         if o == 32 { return " " }
         if o == 33 { return "!" }
