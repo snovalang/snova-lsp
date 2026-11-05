@@ -1,0 +1,83 @@
+package Snova.Lsp
+
+
+/* -- Doc:{LineIndex}
+ *
+ * -- Description: Deterministic line-offset table for a document snapshot.
+ *   Line 0 always starts at offset 0. Offsets advance past each '\\n'.
+ */
+public class LineIndex {
+    private var offsets: Array<int>
+    private var text: string
+
+    public static method fromText(text: string): LineIndex {
+        var offsets: Array<int> = []
+        offsets.push(0)
+        var i = 0
+        while i < text.len() {
+            if text.substring(i, i + 1) == "\n" {
+                offsets.push(i + 1)
+            }
+            i = i + 1
+        }
+        return LineIndex(offsets, text)
+    }
+
+    public method lineCount(): int {
+        return this.offsets.len()
+    }
+
+    public method offsetOfLine(line: int): int {
+        if line < 0 {
+            return 0
+        }
+        if line >= this.offsets.len() {
+            return this.text.len()
+        }
+        return this.offsets.get(line)
+    }
+
+    /* -- Doc:{positionAt}
+     *
+     * -- Description: Converts a byte offset into a zero-based Position.
+     *
+     * -- Param{offset}: Absolute offset into the document text.
+     * -- Returns: Position with character counted in UTF-8 bytes (same as C host).
+     */
+    public method positionAt(offset: int): Position {
+        var off = offset
+        if off < 0 { off = 0 }
+        if off > this.text.len() { off = this.text.len() }
+        var line = 0
+        var i = 0
+        while i < this.offsets.len() {
+            if this.offsets.get(i) <= off {
+                line = i
+            } else {
+                break
+            }
+            i = i + 1
+        }
+        let start = this.offsets.get(line)
+        return Position.new(line, off - start)
+    }
+
+    /* -- Doc:{offsetAt}
+     *
+     * -- Description: Converts a Position into a byte offset, clamped to the line.
+     */
+    public method offsetAt(pos: Position): int {
+        let start = this.offsetOfLine(pos.line)
+        var end = this.text.len()
+        if pos.line + 1 < this.offsets.len() {
+            end = this.offsets.get(pos.line + 1) - 1
+            if end < start { end = start }
+        }
+        var col = pos.character
+        if col < 0 { col = 0 }
+        let cand = start + col
+        if cand > end { return end }
+        if cand > this.text.len() { return this.text.len() }
+        return cand
+    }
+}
