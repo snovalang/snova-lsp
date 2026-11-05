@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/* TODO(SL-2): Protocol models ported to src/Protocol.snl (package Snova.Lsp). */
+
 /* LSP JSON-RPC Error Codes */
 #define LSP_ERR_PARSE_ERROR      -32700
 #define LSP_ERR_INVALID_REQUEST  -32600
