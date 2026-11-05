@@ -1,0 +1,190 @@
+package Snova.Lsp
+
+
+/* -- Doc:{CompletionItem}
+ *
+ * -- Description: Rankable completion candidate. Scores are pure functions of
+ *   label, prefix, and the fixed base/type bonuses supplied by the caller.
+ */
+public struct CompletionItem {
+    public var label: string
+    public var kind: int
+    public var baseScore: int
+    public var typeBonus: int
+    public var matchBonus: int
+    public var finalScore: int
+
+    public static method new(label: string, kind: int, baseScore: int, typeBonus: int): CompletionItem {
+        return CompletionItem {
+            label: label,
+            kind: kind,
+            baseScore: baseScore,
+            typeBonus: typeBonus,
+            matchBonus: 0,
+            finalScore: 0
+        }
+    }
+}
+
+/* -- Doc:{CompletionRanker}
+ *
+ * -- Description: Ports the C insertion-sort ranking (score desc, then shorter
+ *   label, then case-insensitive ASCII label). sortText is zero-padded index
+ *   after sort so clients see a stable order.
+ */
+public class CompletionRanker {
+    /* -- Doc:{computeMatchBonus}
+     *
+     * -- Description: Fixed bonus table for prefix quality. Returns -1 when the
+     *   prefix is non-empty and the label does not match at any tier.
+     */
+    public static method computeMatchBonus(label: string, prefix: string): int {
+        if prefix.len() == 0 {
+            return 0
+        }
+        if label == prefix {
+            return 120
+        }
+        let ll = LspUtil.toLowerAscii(label)
+        let pl = LspUtil.toLowerAscii(prefix)
+        if ll == pl {
+            return 100
+        }
+        if label.startsWith(prefix) {
+            return 80
+        }
+        if ll.startsWith(pl) {
+            return 60
+        }
+        if CompletionRanker.acronymMatches(label, prefix) {
+            return 35
+        }
+        if CompletionRanker.subsequenceMatches(ll, pl) {
+            return 20
+        }
+        if ll.contains(pl) {
+            return 15
+        }
+        return 0 - 1
+    }
+
+    /* -- Doc:{rankAndSort}
+     *
+     * -- Description: Filters non-matching items, scores survivors, and sorts
+     *   with a stable insertion sort into a fresh array (input is not mutated).
+     *
+     * -- Param{items}: Candidate list (insertion order is the stability tie-break).
+     * -- Param{prefix}: Current completion prefix.
+     * -- Returns: Ranked survivors in deterministic order.
+     */
+    public static method rankAndSort(items: Array<CompletionItem>, prefix: string): Array<CompletionItem> {
+        var scored: Array<CompletionItem> = []
+        var i = 0
+        while i < items.len() {
+            let src = items.get(i)
+            let mb = CompletionRanker.computeMatchBonus(src.label, prefix)
+            if prefix.len() == 0 || mb >= 0 {
+                var matchBonus = 0
+                if mb >= 0 {
+                    matchBonus = mb
+                }
+                let finalScore = src.baseScore + (src.typeBonus * 3) + matchBonus
+                scored.push(CompletionItem {
+                    label: src.label,
+                    kind: src.kind,
+                    baseScore: src.baseScore,
+                    typeBonus: src.typeBonus,
+                    matchBonus: matchBonus,
+                    finalScore: finalScore
+                })
+            }
+            i = i + 1
+        }
+
+        // Insertion sort: higher score first; then shorter label; then cmpStr.
+        i = 1
+        while i < scored.len() {
+            let key = scored.get(i)
+            var j = i
+            while j > 0 {
+                let prev = scored.get(j - 1)
+                var swap = false
+                if key.finalScore > prev.finalScore {
+                    swap = true
+                } else if key.finalScore == prev.finalScore {
+                    if key.label.len() < prev.label.len() {
+                        swap = true
+                    } else if key.label.len() == prev.label.len() {
+                        if LspUtil.cmpStr(LspUtil.toLowerAscii(key.label), LspUtil.toLowerAscii(prev.label)) < 0 {
+                            swap = true
+                        }
+                    }
+                }
+                if swap {
+                    scored.set(j, prev)
+                    j = j - 1
+                } else {
+                    break
+                }
+            }
+            scored.set(j, key)
+            i = i + 1
+        }
+        return scored
+    }
+
+    /* -- Doc:{sortTextForIndex}
+     *
+     * -- Description: Zero-padded index used as LSP sortText after ranking.
+     */
+    public static method sortTextForIndex(index: int): string {
+        return LspUtil.padLeftZeros(index, 5)
+    }
+
+    private static method acronymMatches(label: string, prefix: string): bool {
+        if prefix.len() == 0 {
+            return false
+        }
+        var pi = 0
+        var i = 0
+        while i < label.len() && pi < prefix.len() {
+            let c = label.substring(i, i + 1)
+            let o = LspUtil.asciiOrd(c)
+            var isBoundary = false
+            if i == 0 {
+                isBoundary = true
+            } else {
+                let prev = label.substring(i - 1, i)
+                let po = LspUtil.asciiOrd(prev)
+                // Boundary after non-alnum, or lower->upper camel hump.
+                let prevAlnum = (po >= 48 && po <= 57) || (po >= 65 && po <= 90) || (po >= 97 && po <= 122)
+                let curUpper = o >= 65 && o <= 90
+                let prevLower = po >= 97 && po <= 122
+                if prevAlnum == false || (prevLower && curUpper) {
+                    isBoundary = true
+                }
+            }
+            if isBoundary {
+                let want = LspUtil.toLowerAscii(prefix.substring(pi, pi + 1))
+                let got = LspUtil.toLowerAscii(c)
+                if want == got {
+                    pi = pi + 1
+                }
+            }
+            i = i + 1
+        }
+        return pi == prefix.len()
+    }
+
+    private static method subsequenceMatches(labelLower: string, prefixLower: string): bool {
+        var pi = 0
+        var i = 0
+        while i < labelLower.len() && pi < prefixLower.len() {
+            if labelLower.substring(i, i + 1) == prefixLower.substring(pi, pi + 1) {
+                pi = pi + 1
+            }
+            i = i + 1
+        }
+        return pi == prefixLower.len()
+    }
+}

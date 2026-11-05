@@ -5,6 +5,9 @@
 #define _DEFAULT_SOURCE
 #endif
 
+/* TODO(SL-2): Ranking / sortText determinism ported to src/CompletionRank.snl.
+ * Candidate gathering still uses the C snovac analysis bridge. */
+
 #include "lsp_completion.h"
 #include "lsp_analysis.h"
 #include "json.h"
