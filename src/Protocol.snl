@@ -1,0 +1,119 @@
+package Snova.Lsp
+
+/* -- Doc:{Position}
+ *
+ * -- Description: Zero-based LSP Position (line, character).
+ */
+public struct Position {
+    public let line: int
+    public let character: int
+
+    public static method new(line: int, character: int): Position {
+        return Position { line: line, character: character }
+    }
+}
+
+/* -- Doc:{Range}
+ *
+ * -- Description: Half-open LSP Range from start to end.
+ */
+public struct Range {
+    public let start: Position
+    public let end: Position
+
+    public static method new(start: Position, end: Position): Range {
+        return Range { start: start, end: end }
+    }
+}
+
+/* -- Doc:{Location}
+ *
+ * -- Description: Document URI plus Range.
+ */
+public struct Location {
+    public let uri: string
+    public let range: Range
+
+    public static method new(uri: string, range: Range): Location {
+        return Location { uri: uri, range: range }
+    }
+}
+
+/* -- Doc:{DiagnosticSeverity}
+ *
+ * -- Description: LSP diagnostic severity wire integers (1..4). Named helpers
+ *   avoid an `Error` enum variant, which collides with the builtin Error type.
+ */
+public class DiagnosticSeverity {
+    public static method Error(): int { return 1 }
+    public static method Warning(): int { return 2 }
+    public static method Information(): int { return 3 }
+    public static method Hint(): int { return 4 }
+}
+
+/* -- Doc:{Diagnostic}
+ *
+ * -- Description: PublishDiagnostics item. Codes are stable SNOVA#### strings.
+ */
+public struct Diagnostic {
+    public let range: Range
+    public let severity: int
+    public let code: string
+    public let source: string
+    public let message: string
+
+    public static method new(range: Range, severity: int, code: string, message: string, source: string): Diagnostic {
+        return Diagnostic {
+            range: range,
+            severity: severity,
+            code: code,
+            source: source,
+            message: message
+        }
+    }
+}
+
+/* -- Doc:{CompletionKind}
+ *
+ * -- Description: LSP CompletionItemKind integers used by the snl ranking layer.
+ */
+public class CompletionKind {
+    public static method Text(): int { return 1 }
+    public static method Method(): int { return 2 }
+    public static method Function(): int { return 3 }
+    public static method Constructor(): int { return 4 }
+    public static method Field(): int { return 5 }
+    public static method Variable(): int { return 6 }
+    public static method Class(): int { return 7 }
+    public static method Module(): int { return 9 }
+    public static method Property(): int { return 10 }
+    public static method Enum(): int { return 13 }
+    public static method Keyword(): int { return 14 }
+    public static method Snippet(): int { return 15 }
+    public static method EnumMember(): int { return 20 }
+    public static method Constant(): int { return 21 }
+    public static method Struct(): int { return 22 }
+    public static method TypeParam(): int { return 25 }
+}
+
+/* -- Doc:{SemanticToken}
+ *
+ * -- Description: Absolute (line, start, length, type, modifiers) before delta encoding.
+ */
+public struct SemanticToken {
+    public let line: int
+    public let startCharacter: int
+    public let length: int
+    public let tokenType: int
+    public let modifiers: int
+
+    public static method new(line: int, startCharacter: int, length: int, tokenType: int, modifiers: int): SemanticToken {
+        return SemanticToken {
+            line: line,
+            startCharacter: startCharacter,
+            length: length,
+            tokenType: tokenType,
+            modifiers: modifiers
+        }
+    }
+}

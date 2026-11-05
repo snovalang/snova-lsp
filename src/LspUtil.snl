@@ -1,0 +1,339 @@
+package Snova.Lsp
+
+import builtin.core.types.values
+import builtin.text.text.values
+
+/* -- Doc:{LspUtil}
+ *
+ * -- Description: LSP helpers layered on release Builtin types
+ *   (`int.toString`, `Text.padLeft`, `string.toLower` / indexing, `Option`).
+ *   ASCII ordinal maps remain explicit so URI percent-encoding and JSON
+ *   `\\u00XX` escapes stay byte-accurate and deterministic.
+ */
+public class LspUtil {
+    /* -- Doc:{intToString}
+     *
+     * -- Description: Formats an int via Builtin primitive `toString()`.
+     */
+    public static method intToString(val: int): string {
+        return val.toString()
+    }
+
+    /* -- Doc:{padLeftZeros}
+     *
+     * -- Description: Zero-pads via Builtin `Text.padLeft`.
+     */
+    public static method padLeftZeros(val: int, width: int): string {
+        return Text.padLeft(val.toString(), width, "0")
+    }
+
+    /* -- Doc:{toLowerAscii}
+     *
+     * -- Description: Lowercases via Builtin `string.toLower()`.
+     */
+    public static method toLowerAscii(s: string): string {
+        return s.toLower()
+    }
+
+    /* -- Doc:{charAt}
+     *
+     * -- Description: One-character string at index using Builtin string indexing.
+     */
+    public static method charAt(s: string, index: int): string {
+        if index < 0 || index >= s.length() {
+            return ""
+        }
+        return s[index].toString()
+    }
+
+    /* -- Doc:{digitValue}
+     *
+     * -- Description: Parses one decimal digit via Builtin `indexOf`, or -1.
+     */
+    public static method digitValue(c: string): int {
+        return "0123456789".indexOf(c)
+    }
+
+    /* -- Doc:{hexNibble}
+     *
+     * -- Description: Uppercase hex digit for 0..15 via Builtin string indexing.
+     */
+    public static method hexNibble(n: int): string {
+        if n < 0 || n > 15 {
+            return "0"
+        }
+        return "0123456789ABCDEF"[n].toString()
+    }
+
+    /* -- Doc:{hexValue}
+     *
+     * -- Description: Parses one hex character to 0..15, or -1 when invalid.
+     */
+    public static method hexValue(c: string): int {
+        let idx = "0123456789ABCDEFabcdef".indexOf(c)
+        if idx < 0 {
+            return 0 - 1
+        }
+        if idx >= 16 {
+            return idx - 6
+        }
+        return idx
+    }
+
+    /* -- Doc:{parsePositiveInt}
+     *
+     * -- Description: Parses an unsigned decimal into Builtin `Option<int>`.
+     */
+    public static method parsePositiveInt(s: string): Option<int> {
+        if s.isEmpty() {
+            return None
+        }
+        var result = 0
+        var i = 0
+        while i < s.length() {
+            let d = LspUtil.digitValue(LspUtil.charAt(s, i))
+            if d < 0 {
+                return None
+            }
+            result = result * 10 + d
+            i = i + 1
+        }
+        return Some(result)
+    }
+
+    /* -- Doc:{cmpStr}
+     *
+     * -- Description: Deterministic lexicographic ASCII compare.
+     */
+    public static method cmpStr(a: string, b: string): int {
+        var i = 0
+        let al = a.length()
+        let bl = b.length()
+        while i < al && i < bl {
+            let oa = LspUtil.asciiOrd(LspUtil.charAt(a, i))
+            let ob = LspUtil.asciiOrd(LspUtil.charAt(b, i))
+            if oa < ob { return 0 - 1 }
+            if oa > ob { return 1 }
+            i = i + 1
+        }
+        if al < bl { return 0 - 1 }
+        if al > bl { return 1 }
+        return 0
+    }
+
+    /* -- Doc:{asciiOrd}
+     *
+     * -- Description: Maps a one-character string to its ASCII code point.
+     */
+    public static method asciiOrd(c: string): int {
+        if c == "\b" { return 8 }
+        if c == "\t" { return 9 }
+        if c == "\n" { return 10 }
+        if c == "\f" { return 12 }
+        if c == "\r" { return 13 }
+        if c == " " { return 32 }
+        if c == "!" { return 33 }
+        if c == "\"" { return 34 }
+        if c == "#" { return 35 }
+        if c == "$" { return 36 }
+        if c == "%" { return 37 }
+        if c == "&" { return 38 }
+        if c == "'" { return 39 }
+        if c == "(" { return 40 }
+        if c == ")" { return 41 }
+        if c == "*" { return 42 }
+        if c == "+" { return 43 }
+        if c == "," { return 44 }
+        if c == "-" { return 45 }
+        if c == "." { return 46 }
+        if c == "/" { return 47 }
+        if c == "0" { return 48 }
+        if c == "1" { return 49 }
+        if c == "2" { return 50 }
+        if c == "3" { return 51 }
+        if c == "4" { return 52 }
+        if c == "5" { return 53 }
+        if c == "6" { return 54 }
+        if c == "7" { return 55 }
+        if c == "8" { return 56 }
+        if c == "9" { return 57 }
+        if c == ":" { return 58 }
+        if c == ";" { return 59 }
+        if c == "<" { return 60 }
+        if c == "=" { return 61 }
+        if c == ">" { return 62 }
+        if c == "?" { return 63 }
+        if c == "@" { return 64 }
+        if c == "A" { return 65 }
+        if c == "B" { return 66 }
+        if c == "C" { return 67 }
+        if c == "D" { return 68 }
+        if c == "E" { return 69 }
+        if c == "F" { return 70 }
+        if c == "G" { return 71 }
+        if c == "H" { return 72 }
+        if c == "I" { return 73 }
+        if c == "J" { return 74 }
+        if c == "K" { return 75 }
+        if c == "L" { return 76 }
+        if c == "M" { return 77 }
+        if c == "N" { return 78 }
+        if c == "O" { return 79 }
+        if c == "P" { return 80 }
+        if c == "Q" { return 81 }
+        if c == "R" { return 82 }
+        if c == "S" { return 83 }
+        if c == "T" { return 84 }
+        if c == "U" { return 85 }
+        if c == "V" { return 86 }
+        if c == "W" { return 87 }
+        if c == "X" { return 88 }
+        if c == "Y" { return 89 }
+        if c == "Z" { return 90 }
+        if c == "[" { return 91 }
+        if c == "\\" { return 92 }
+        if c == "]" { return 93 }
+        if c == "^" { return 94 }
+        if c == "_" { return 95 }
+        if c == "`" { return 96 }
+        if c == "a" { return 97 }
+        if c == "b" { return 98 }
+        if c == "c" { return 99 }
+        if c == "d" { return 100 }
+        if c == "e" { return 101 }
+        if c == "f" { return 102 }
+        if c == "g" { return 103 }
+        if c == "h" { return 104 }
+        if c == "i" { return 105 }
+        if c == "j" { return 106 }
+        if c == "k" { return 107 }
+        if c == "l" { return 108 }
+        if c == "m" { return 109 }
+        if c == "n" { return 110 }
+        if c == "o" { return 111 }
+        if c == "p" { return 112 }
+        if c == "q" { return 113 }
+        if c == "r" { return 114 }
+        if c == "s" { return 115 }
+        if c == "t" { return 116 }
+        if c == "u" { return 117 }
+        if c == "v" { return 118 }
+        if c == "w" { return 119 }
+        if c == "x" { return 120 }
+        if c == "y" { return 121 }
+        if c == "z" { return 122 }
+        if c == "{" { return 123 }
+        if c == "|" { return 124 }
+        if c == "}" { return 125 }
+        if c == "~" { return 126 }
+        return 0
+    }
+
+    /* -- Doc:{chrAscii}
+     *
+     * -- Description: Inverse of asciiOrd for the printable ASCII range.
+     */
+    public static method chrAscii(o: int): string {
+        if o == 8 { return "\b" }
+        if o == 9 { return "\t" }
+        if o == 10 { return "\n" }
+        if o == 12 { return "\f" }
+        if o == 13 { return "\r" }
+        if o == 32 { return " " }
+        if o == 33 { return "!" }
+        if o == 34 { return "\"" }
+        if o == 35 { return "#" }
+        if o == 36 { return "$" }
+        if o == 37 { return "%" }
+        if o == 38 { return "&" }
+        if o == 39 { return "'" }
+        if o == 40 { return "(" }
+        if o == 41 { return ")" }
+        if o == 42 { return "*" }
+        if o == 43 { return "+" }
+        if o == 44 { return "," }
+        if o == 45 { return "-" }
+        if o == 46 { return "." }
+        if o == 47 { return "/" }
+        if o == 48 { return "0" }
+        if o == 49 { return "1" }
+        if o == 50 { return "2" }
+        if o == 51 { return "3" }
+        if o == 52 { return "4" }
+        if o == 53 { return "5" }
+        if o == 54 { return "6" }
+        if o == 55 { return "7" }
+        if o == 56 { return "8" }
+        if o == 57 { return "9" }
+        if o == 58 { return ":" }
+        if o == 59 { return ";" }
+        if o == 60 { return "<" }
+        if o == 61 { return "=" }
+        if o == 62 { return ">" }
+        if o == 63 { return "?" }
+        if o == 64 { return "@" }
+        if o == 65 { return "A" }
+        if o == 66 { return "B" }
+        if o == 67 { return "C" }
+        if o == 68 { return "D" }
+        if o == 69 { return "E" }
+        if o == 70 { return "F" }
+        if o == 71 { return "G" }
+        if o == 72 { return "H" }
+        if o == 73 { return "I" }
+        if o == 74 { return "J" }
+        if o == 75 { return "K" }
+        if o == 76 { return "L" }
+        if o == 77 { return "M" }
+        if o == 78 { return "N" }
+        if o == 79 { return "O" }
+        if o == 80 { return "P" }
+        if o == 81 { return "Q" }
+        if o == 82 { return "R" }
+        if o == 83 { return "S" }
+        if o == 84 { return "T" }
+        if o == 85 { return "U" }
+        if o == 86 { return "V" }
+        if o == 87 { return "W" }
+        if o == 88 { return "X" }
+        if o == 89 { return "Y" }
+        if o == 90 { return "Z" }
+        if o == 91 { return "[" }
+        if o == 92 { return "\\" }
+        if o == 93 { return "]" }
+        if o == 94 { return "^" }
+        if o == 95 { return "_" }
+        if o == 96 { return "`" }
+        if o == 97 { return "a" }
+        if o == 98 { return "b" }
+        if o == 99 { return "c" }
+        if o == 100 { return "d" }
+        if o == 101 { return "e" }
+        if o == 102 { return "f" }
+        if o == 103 { return "g" }
+        if o == 104 { return "h" }
+        if o == 105 { return "i" }
+        if o == 106 { return "j" }
+        if o == 107 { return "k" }
+        if o == 108 { return "l" }
+        if o == 109 { return "m" }
+        if o == 110 { return "n" }
+        if o == 111 { return "o" }
+        if o == 112 { return "p" }
+        if o == 113 { return "q" }
+        if o == 114 { return "r" }
+        if o == 115 { return "s" }
+        if o == 116 { return "t" }
+        if o == 117 { return "u" }
+        if o == 118 { return "v" }
+        if o == 119 { return "w" }
+        if o == 120 { return "x" }
+        if o == 121 { return "y" }
+        if o == 122 { return "z" }
+        if o == 123 { return "{" }
+        if o == 124 { return "|" }
+        if o == 125 { return "}" }
+        if o == 126 { return "~" }
+        return ""
+    }
+}

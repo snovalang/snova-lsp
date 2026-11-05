@@ -4,6 +4,9 @@
 #include <string.h>
 #include <ctype.h>
 
+/* TODO(SL-2): Relative delta encoding + stable token ordering ported to
+ * src/SemanticEncode.snl. Token discovery still walks the C lexer output. */
+
 typedef struct {
     LspSemanticToken *items;
     size_t len;

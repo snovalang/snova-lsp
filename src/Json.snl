@@ -1,0 +1,141 @@
+package Snova.Lsp
+
+/* -- Doc:{JsonBuilder}
+ *
+ * -- Description: Deterministic JSON writer on Builtin string/int APIs.
+ *   Object members are emitted in insertion order (never hash-map order).
+ */
+public class JsonBuilder {
+    private var buf: string
+    private var needsComma: bool
+
+    public static method new(): JsonBuilder {
+        return JsonBuilder("", false)
+    }
+
+    public method toString(): string {
+        return this.buf
+    }
+
+    private method maybeComma(): unit {
+        if this.needsComma {
+            this.buf = this.buf + ","
+            this.needsComma = false
+        }
+    }
+
+    public method startObj(): unit {
+        this.maybeComma()
+        this.buf = this.buf + "{"
+        this.needsComma = false
+    }
+
+    public method endObj(): unit {
+        this.buf = this.buf + "}"
+        this.needsComma = true
+    }
+
+    public method startArr(): unit {
+        this.maybeComma()
+        this.buf = this.buf + "["
+        this.needsComma = false
+    }
+
+    public method endArr(): unit {
+        this.buf = this.buf + "]"
+        this.needsComma = true
+    }
+
+    public method key(k: string): unit {
+        this.maybeComma()
+        this.writeString(k)
+        this.buf = this.buf + ":"
+        this.needsComma = false
+    }
+
+    public method nullValue(): unit {
+        this.maybeComma()
+        this.buf = this.buf + "null"
+        this.needsComma = true
+    }
+
+    public method boolValue(v: bool): unit {
+        this.maybeComma()
+        if v {
+            this.buf = this.buf + "true"
+        } else {
+            this.buf = this.buf + "false"
+        }
+        this.needsComma = true
+    }
+
+    public method intValue(v: int): unit {
+        this.maybeComma()
+        this.buf = this.buf + v.toString()
+        this.needsComma = true
+    }
+
+    public method strValue(v: string): unit {
+        this.maybeComma()
+        this.writeString(v)
+        this.needsComma = true
+    }
+
+    public method rawValue(raw: string): unit {
+        this.maybeComma()
+        this.buf = this.buf + raw
+        this.needsComma = true
+    }
+
+    public method kvStr(k: string, v: string): unit {
+        this.key(k)
+        this.strValue(v)
+    }
+
+    public method kvInt(k: string, v: int): unit {
+        this.key(k)
+        this.intValue(v)
+    }
+
+    public method kvBool(k: string, v: bool): unit {
+        this.key(k)
+        this.boolValue(v)
+    }
+
+    public method kvNull(k: string): unit {
+        this.key(k)
+        this.nullValue()
+    }
+
+    private method writeString(v: string): unit {
+        this.buf = this.buf + "\""
+        var i = 0
+        while i < v.length() {
+            let c = LspUtil.charAt(v, i)
+            if c == "\"" {
+                this.buf = this.buf + "\\\""
+            } else if c == "\\" {
+                this.buf = this.buf + "\\\\"
+            } else if c == "\b" {
+                this.buf = this.buf + "\\b"
+            } else if c == "\f" {
+                this.buf = this.buf + "\\f"
+            } else if c == "\n" {
+                this.buf = this.buf + "\\n"
+            } else if c == "\r" {
+                this.buf = this.buf + "\\r"
+            } else if c == "\t" {
+                this.buf = this.buf + "\\t"
+            } else {
+                let o = LspUtil.asciiOrd(c)
+                if o >= 0 && o < 32 {
+                    this.buf = this.buf + "\\u00" + LspUtil.hexNibble(o / 16) + LspUtil.hexNibble(o % 16)
+                } else {
+                    this.buf = this.buf + c
+                }
+            }
+            i = i + 1
+        }
+        this.buf = this.buf + "\""
+    }
+}

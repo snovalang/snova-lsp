@@ -6,6 +6,9 @@
 #include <string.h>
 #include <ctype.h>
 
+/* TODO(SL-2): URI codec + line-index math ported to src/Uri.snl and
+ * src/Document.snl. Docstore open/close and Windows path quirks stay in C. */
+
 char *lsp_uri_to_path(const char *uri) {
     if (!uri) return NULL;
     const char *p = uri;

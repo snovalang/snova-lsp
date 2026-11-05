@@ -1,4 +1,4 @@
-module github.com/supernovalang/snova-lsp https://github.com/supernovalang/snova-lsp
+module github.com/snovalang/snova-lsp https://github.com/snovalang/snova-lsp
 
 snova "1.0.0"
 

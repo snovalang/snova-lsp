@@ -4,6 +4,10 @@ CPPFLAGS ?= -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -D_DARWIN_C_SOURCE
 WARN = -Wall -Wextra -Wpedantic -Wshadow -Wno-sign-conversion
 BUILD ?= build
 
+# Single source of truth for serverInfo.version (see VERSION + src/Version.snl).
+LSP_VERSION := $(shell tr -d ' \n\r\t' < VERSION 2>/dev/null || printf '0.0.0')
+CPPFLAGS += -DLSP_VERSION=\"$(LSP_VERSION)\"
+
 SNOVAC_DIR ?= ../snovac
 SNOVAC_LIB ?= $(SNOVAC_DIR)/build/libsnovart.a
 
@@ -35,7 +39,12 @@ OBJS = $(addprefix $(BUILD)/,$(notdir $(SRCS:.c=.o)))
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 
-.PHONY: all rebuild clean test install
+# snl toolchain (optional). test-snl copies sources to a temp tree whose path
+# does not contain "/snova-" so project-run accepts Main as an app entrypoint.
+SNL ?= $(SNOVAC_DIR)/build/snl
+SNOVA_STD_PATH ?= $(SNOVAC_DIR)/builtin
+
+.PHONY: all rebuild clean test test-snl test-all install
 
 all: $(BIN)
 
@@ -66,6 +75,21 @@ $(TEST_BIN): tests/test_completion.c $(filter-out $(BUILD)/main.o,$(OBJS)) $(SNO
 
 test: $(TEST_BIN)
 	./$(TEST_BIN)
+
+# Runs the deterministic .snl self-test. Requires a built `snl` + builtins.
+test-snl:
+	@test -x "$(SNL)" || (echo "error: snl not found at $(SNL); build snovac first" >&2; exit 1)
+	@test -d "$(SNOVA_STD_PATH)" || (echo "error: builtins not found at $(SNOVA_STD_PATH)" >&2; exit 1)
+	@snl_abs=$$(cd "$$(dirname "$(SNL)")" && pwd)/$$(basename "$(SNL)") && \
+	  std_abs=$$(cd "$(SNOVA_STD_PATH)" && pwd) && \
+	  tmpdir=$$(mktemp -d /tmp/lspsnl.XXXXXX) && \
+	  mkdir -p "$$tmpdir/src" && \
+	  cp src/*.snl "$$tmpdir/src/" && \
+	  cp mod.sns "$$tmpdir/" && \
+	  ( cd "$$tmpdir" && SNOVA_STD_PATH="$$std_abs" "$$snl_abs" run --project . ); \
+	  rc=$$?; rm -rf "$$tmpdir"; exit $$rc
+
+test-all: test test-snl
 
 install: $(BIN)
 	@mkdir -p $(BINDIR)
