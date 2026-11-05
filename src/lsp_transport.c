@@ -4,6 +4,10 @@
 #include <string.h>
 #include <stdarg.h>
 
+/* TODO(SL-2): Content-Length framing helpers live in src/Transport.snl
+ * (LspFraming). This C file remains for binary stdin/stdout until Runtime
+ * exposes byte-oriented stdio to snl. */
+
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
