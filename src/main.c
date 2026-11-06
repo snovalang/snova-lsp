@@ -258,15 +258,14 @@ static void send_response(LspTransport *t, const JsonVal *id, const char *result
     jb_end_obj(&jb);
     char *msg = jb_take(&jb);
     if (msg) {
-        // Log the id being responded to and a preview of the result payload
+        // Keep protocol logs compact; transport logs the payload size.
         if (id && id->kind == JSON_NUMBER) {
-            lsp_log(t, "[LSP OUT] response id=%" PRId64 " result=%.200s",
-                    (int64_t)id->num_val, msg);
+            lsp_log(t, "[LSP OUT] response id=%" PRId64,
+                    (int64_t)id->num_val);
         } else if (id && id->kind == JSON_STRING) {
-            lsp_log(t, "[LSP OUT] response id=\"%s\" result=%.200s",
-                    id->str_val, msg);
+            lsp_log(t, "[LSP OUT] response id=\"%s\"", id->str_val);
         } else {
-            lsp_log(t, "[LSP OUT] response id=null result=%.200s", msg);
+            lsp_log(t, "[LSP OUT] response id=null");
         }
         lsp_transport_write_message(t, msg, strlen(msg));
         free(msg);

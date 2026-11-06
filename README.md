@@ -13,7 +13,6 @@ IDE-agnostic Language Server Protocol (LSP) server for Snovalang based on the `s
 - **Pulsar completions**: Templates for `pulsar func` and `pulsar method`, with async stream-aware signatures.
 - **Package imports**: Resolves package and qualified-symbol imports for completion and navigation.
 
-
 ## Snovalang (`.snl`) migration
 
 Pure LSP logic is moving from C into `src/*.snl` under package `Snova.Lsp` (protocol models, JSON writer, Content-Length framing, URI codec, line index, completion ranking, semantic delta encoding, RPC shaping). The production stdio server and snovac analysis bridge remain in C for now (`TODO(SL-2)` markers).
@@ -24,18 +23,29 @@ Versioning: bump the root `VERSION` file and `src/Version.snl` in the **same com
 
 Determinism: same inputs produce the same outputs — insertion-ordered JSON keys, insertion-sort ranking with zero-padded `sortText`, index-sorted semantic tokens, and no wall-clock or hash-map ordering.
 
-```bash
-make test-snl SNOVAC_DIR=../snovac   # requires a built snl + builtins
-make test                            # existing C completion tests
-make test-all
+## Install from a terminal
+
+On macOS or Linux, install the latest server and matching compiler with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/snovalang/snova-lsp/master/install.sh | sh
 ```
 
+The installer downloads both source repositories, builds them, and places
+`snova-lsp` in `~/.local/bin`. Add that directory to `PATH` if needed. For a
+checkout, `make` downloads `snovalang/snovac` automatically; `make install`
+installs the resulting server.
+
+```sh
+make test-snl
+make test
+make test-all
+```
 ## Windows
 
-Run `make` from a shell with the Snovalang compiler available at `../snovac`.
-The executable is emitted to `tools/bin/snova-lsp.exe`, which is the location
-used by the Snovalang editor extension. Add that directory to `PATH` when
-launching the server manually.
+The `install.sh` helper supports macOS and Linux. Windows users can clone
+[`snovalang/snova-lsp`](https://github.com/snovalang/snova-lsp) and build with
+the compiler source from [`snovalang/snovac`](https://github.com/snovalang/snovac).
 
 Snovalang sources use the `.snl` extension. Snovalang scripts use `.sns`. The server indexes and analyzes only those two extensions. `.snova`, `.java`, and every other extension are ignored.
 

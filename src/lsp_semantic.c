@@ -34,7 +34,9 @@ static void add_interpolation_tokens(TokenList *list, const LspDocument *doc,
             size_t begin = i;
             int depth = 1;
             LspPosition delimiter = lsp_offset_to_pos(doc, tok->span.offset + (uint32_t)begin);
-            add_token(list, delimiter.line, delimiter.character, 2, LSP_SEMANTIC_TYPE_OPERATOR);
+            LspPosition delimiter_end = lsp_offset_to_pos(doc, tok->span.offset + (uint32_t)begin + 2);
+            add_token(list, delimiter.line, delimiter.character,
+                      delimiter_end.character - delimiter.character, LSP_SEMANTIC_TYPE_OPERATOR);
             i += 2;
             int in_string = 0;
             while (i < n && depth) {
@@ -53,7 +55,8 @@ static void add_interpolation_tokens(TokenList *list, const LspDocument *doc,
                     size_t id = i++;
                     while (i < n && (isalnum((unsigned char)s[i]) || s[i] == '_')) i++;
                     LspPosition p = lsp_offset_to_pos(doc, tok->span.offset + (uint32_t)id);
-                    add_token(list, p.line, p.character, (uint32_t)(i - id),
+                    LspPosition end = lsp_offset_to_pos(doc, tok->span.offset + (uint32_t)i);
+                    add_token(list, p.line, p.character, end.character - p.character,
                               LSP_SEMANTIC_TYPE_VARIABLE);
                     continue;
                 }
@@ -95,12 +98,20 @@ char *lsp_semantic_tokens_query(LspAnalysisEngine *engine, const LspDocument *do
         } else if (tok->kind == SN_TOK_FUNC || tok->kind == SN_TOK_METHOD) {
             type = LSP_SEMANTIC_TYPE_KEYWORD;
         } else if (tok->kind == SN_TOK_IDENT) {
-            /* Primitive names are identifiers. Marking them as variables
-             * overrides the grammar color and makes `int` and `string` look
-             * unresolved. */
-            if (tok->text && sn_builtin_is_primitive_name(tok->text)) {
-                type = LSP_SEMANTIC_TYPE_TYPE;
-            } else if (tok->text && isupper((unsigned char)tok->text[0])) {
+            const SnSymbol *sym = lsp_find_symbol_at(a, doc, tok->span.offset, NULL);
+            if (sym) {
+                switch (sym->kind) {
+                    case SN_SYM_TYPE: type = LSP_SEMANTIC_TYPE_TYPE; break;
+                    case SN_SYM_FUNC: type = LSP_SEMANTIC_TYPE_FUNCTION; break;
+                    case SN_SYM_METHOD: type = LSP_SEMANTIC_TYPE_METHOD; break;
+                    case SN_SYM_FIELD: type = LSP_SEMANTIC_TYPE_PROPERTY; break;
+                    case SN_SYM_CONST: case SN_SYM_VARIANT: type = LSP_SEMANTIC_TYPE_ENUM_MEMBER; break;
+                    case SN_SYM_PARAM: type = LSP_SEMANTIC_TYPE_PARAMETER; break;
+                    case SN_SYM_PACKAGE: type = LSP_SEMANTIC_TYPE_NAMESPACE; break;
+                    default: type = LSP_SEMANTIC_TYPE_VARIABLE; break;
+                }
+            } else if ((tok->text && sn_builtin_is_primitive_name(tok->text)) ||
+                       (tok->text && isupper((unsigned char)tok->text[0]))) {
                 type = LSP_SEMANTIC_TYPE_TYPE;
             } else if (i + 1 < a->tokens.len && a->tokens.data[i + 1].kind == SN_TOK_LPAREN) {
                 type = LSP_SEMANTIC_TYPE_FUNCTION;
@@ -110,7 +121,9 @@ char *lsp_semantic_tokens_query(LspAnalysisEngine *engine, const LspDocument *do
         } else {
             continue;
         }
-        add_token(&list, p.line, p.character, tok->span.len, type);
+        LspPosition end = lsp_offset_to_pos(doc, tok->span.offset + tok->span.len);
+        uint32_t token_length = end.line == p.line ? end.character - p.character : tok->span.len;
+        add_token(&list, p.line, p.character, token_length, type);
     }
 
     JsonBuilder jb;

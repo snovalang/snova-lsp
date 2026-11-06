@@ -862,6 +862,14 @@ static bool import_covers_package(const LspDocAnalysis *a, const char *package_n
     return false;
 }
 
+/* Import spelling comes from the compiler's discovered package graph. */
+static const char *completion_import_path(const LspDocAnalysis *a,
+                                         const SnPackageScopeEntry *entry) {
+    if (!a || !entry || !entry->package_name) return NULL;
+    SnPackageNode *node = sn_pkggraph_find(&a->graph, entry->package_name);
+    return node ? node->name : NULL;
+}
+
 /* Return the end of the package declaration line. Imports are inserted at
  * this point so the existing blank line and import formatting remain intact. */
 static uint32_t package_line_end(const LspDocument *doc, const char *package_name,
@@ -1143,9 +1151,11 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
             // Cross-package symbols from all dependency / workspace packages
             for (SnPackageScopeEntry *pe = a->resolver.packages; pe; pe = pe->next) {
                 if (!pe->package_name || !pe->scope) continue;
+                const char *import_path = completion_import_path(a, pe);
+                if (!import_path) continue;
                 if (pkg_name && strcmp(pe->package_name, pkg_name) == 0) continue;
 
-                bool in_imports = import_covers_package(a, pe->package_name);
+                bool in_imports = import_covers_package(a, import_path);
                 if (in_imports) continue;
 
                 for (size_t b = 0; b < pe->scope->nbuckets; b++) {
@@ -1186,7 +1196,7 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
                         if (ctx == CTX_TYPE_POS && sym->kind != SN_SYM_TYPE) continue;
 
                         char detail[512];
-                        snprintf(detail, sizeof(detail), "%s %s (from %s)", kind_str, sym->name, pe->package_name);
+                        snprintf(detail, sizeof(detail), "%s %s (from %s)", kind_str, sym->name, import_path);
 
                         char insert_text[256];
                         int insert_fmt = 1;
@@ -1199,9 +1209,9 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
 
                         int score = (ctx == CTX_TYPE_POS) ? 90 : 65;
                         const char *needed_import = (ctx == CTX_IMPORT_LINE ||
-                                                     import_covers_package(a, pe->package_name))
-                            ? NULL : pe->package_name;
-                        complist_add(&list, sym->name, kind, detail, pe->package_name,
+                                                     import_covers_package(a, import_path))
+                            ? NULL : import_path;
+                        complist_add(&list, sym->name, kind, detail, import_path,
                                      insert_text, insert_fmt, needed_import, score, type_bonus);
                     }
                 }

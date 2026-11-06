@@ -136,13 +136,19 @@ static void add_auto_import_actions(ActionList *list, const LspDocAnalysis *a, c
     // Search across package scopes in the graph
     for (SnPackageScopeEntry *pe = a->resolver.packages; pe; pe = pe->next) {
         if (!pe->package_name || !pe->scope) continue;
+        SnPackageNode *package = sn_pkggraph_find(&a->graph, pe->package_name);
+        if (!package || !package->name) continue;
+        const char *import_path = package->name;
 
         // Skip current package and already imported
-        if (a->unit.package && strcmp(pe->package_name, a->unit.package) == 0) continue;
+        if (a->unit.package && strcmp(import_path, a->unit.package) == 0) continue;
         bool already_imported = false;
         for (size_t i = 0; i < a->unit.imports.len; i++) {
             const char *imp = SN_LIST_AT(a->unit.imports, const char, i);
-            if (imp && strcmp(imp, pe->package_name) == 0) {
+            size_t path_len = strlen(import_path);
+            if (imp && (strcmp(imp, import_path) == 0 ||
+                    (strlen(imp) > path_len &&
+                     strncmp(imp, import_path, path_len) == 0 && imp[path_len] == '.'))) {
                 already_imported = true;
                 break;
             }
@@ -152,11 +158,20 @@ static void add_auto_import_actions(ActionList *list, const LspDocAnalysis *a, c
         const char *iname = sn_intern_cstr((SnInternTable *)&a->intern, sym_name);
         SnSymbol *sym = sn_scope_lookup_local(pe->scope, iname);
         if (sym && (sym->kind == SN_SYM_TYPE || sym->kind == SN_SYM_FUNC || sym->kind == SN_SYM_CONST || sym->kind == SN_SYM_VARIANT)) {
-            char title[256];
-            snprintf(title, sizeof(title), "Import '%s' for '%s'", pe->package_name, sym_name);
-            char new_text[256];
-            snprintf(new_text, sizeof(new_text), "import %s;\n", pe->package_name);
+            if (sym->decl && sym->decl->vis != SN_VIS_PUBLIC && sym->decl->vis != SN_VIS_DEFAULT) continue;
+            size_t path_len = strlen(import_path);
+            char *title = (char *)malloc(path_len + sizeof("Import ''"));
+            char *new_text = (char *)malloc(path_len + sizeof("import ;\n"));
+            if (!title || !new_text) {
+                free(title);
+                free(new_text);
+                continue;
+            }
+            snprintf(title, path_len + sizeof("Import ''"), "Import '%s'", import_path);
+            snprintf(new_text, path_len + sizeof("import ;\n"), "import %s;\n", import_path);
             actionlist_add(list, title, "quickfix", true, doc->uri, ins_range, new_text);
+            free(title);
+            free(new_text);
         }
     }
 }

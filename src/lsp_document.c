@@ -224,11 +224,31 @@ uint32_t lsp_pos_to_offset(const LspDocument *doc, LspPosition pos) {
     }
     uint32_t line_start = doc->line_offsets[pos.line];
     uint32_t next_line = (pos.line + 1 < doc->line_count) ? doc->line_offsets[pos.line + 1] : (uint32_t)doc->text_len;
-    uint32_t max_char = (next_line > line_start) ? (next_line - line_start) : 0;
-    if (pos.character > max_char) {
-        return line_start + max_char;
+    uint32_t end = next_line;
+    while (end > line_start && (doc->text[end - 1] == '\n' || doc->text[end - 1] == '\r')) end--;
+    uint32_t off = line_start, units = 0;
+    while (off < end && units < pos.character) {
+        unsigned char c = (unsigned char)doc->text[off];
+        uint32_t bytes = c < 0x80 ? 1 : (c & 0xe0) == 0xc0 ? 2 : (c & 0xf0) == 0xe0 ? 3 : (c & 0xf8) == 0xf0 ? 4 : 1;
+        if (off + bytes > end) bytes = 1;
+        uint32_t width = bytes == 4 ? 2 : 1;
+        if (units + width > pos.character) break;
+        units += width;
+        off += bytes;
     }
-    return line_start + pos.character;
+    return off;
+}
+
+static uint32_t utf16_units(const char *s, size_t n) {
+    uint32_t units = 0;
+    for (size_t i = 0; i < n;) {
+        unsigned char c = (unsigned char)s[i];
+        size_t bytes = c < 0x80 ? 1 : (c & 0xe0) == 0xc0 ? 2 : (c & 0xf0) == 0xe0 ? 3 : (c & 0xf8) == 0xf0 ? 4 : 1;
+        if (i + bytes > n) bytes = 1;
+        units += bytes == 4 ? 2 : 1;
+        i += bytes;
+    }
+    return units;
 }
 
 LspPosition lsp_offset_to_pos(const LspDocument *doc, uint32_t offset) {
@@ -252,7 +272,7 @@ LspPosition lsp_offset_to_pos(const LspDocument *doc, uint32_t offset) {
     }
 
     pos.line = (uint32_t)line;
-    pos.character = (uint32_t)(offset - doc->line_offsets[line]);
+    pos.character = utf16_units(doc->text + doc->line_offsets[line], offset - doc->line_offsets[line]);
     return pos;
 }
 

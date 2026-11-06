@@ -8,7 +8,8 @@ BUILD ?= build
 LSP_VERSION := $(shell tr -d ' \n\r\t' < VERSION 2>/dev/null || printf '0.0.0')
 CPPFLAGS += -DLSP_VERSION=\"$(LSP_VERSION)\"
 
-SNOVAC_DIR ?= ../snovac
+SNOVAC_REPO ?= https://github.com/snovalang/snovac.git
+SNOVAC_DIR ?= $(BUILD)/deps/snovac
 SNOVAC_LIB ?= $(SNOVAC_DIR)/build/libsnovart.a
 
 INCLUDES = -Isrc \
@@ -61,10 +62,20 @@ $(BIN_DIR):
 	if not exist tools\bin mkdir tools\bin
 endif
 
-$(SNOVAC_LIB):
+ifeq ($(OS),Windows_NT)
+$(SNOVAC_DIR)/Makefile:
+	@if not exist "$(dir $(SNOVAC_DIR))" mkdir "$(dir $(SNOVAC_DIR))"
+	git clone --depth 1 "$(SNOVAC_REPO)" "$(SNOVAC_DIR)"
+else
+$(SNOVAC_DIR)/Makefile:
+	mkdir -p "$(dir $(SNOVAC_DIR))"
+	git clone --depth 1 "$(SNOVAC_REPO)" "$(SNOVAC_DIR)"
+endif
+
+$(SNOVAC_LIB): $(SNOVAC_DIR)/Makefile
 	$(MAKE) -C $(SNOVAC_DIR) all
 
-$(BUILD)/%.o: src/%.c | $(BUILD)
+$(BUILD)/%.o: src/%.c | $(BUILD) $(SNOVAC_DIR)/Makefile
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARN) $(INCLUDES) -c -o $@ $<
 
 $(BIN): $(OBJS) $(SNOVAC_LIB) | $(BIN_DIR)
