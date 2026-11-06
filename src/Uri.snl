@@ -1,0 +1,69 @@
+package Snova.Lsp
+
+/* -- Doc:{UriCodec}
+ *
+ * -- Description: Deterministic file URI encode/decode for POSIX paths.
+ *   Encoding uses uppercase %XX for non-unreserved octets via Builtin string
+ *   indexing helpers. Decoding accepts either hex case.
+ */
+public class UriCodec {
+    public static method pathToUri(path: string): string {
+        if path.startsWith("file://") {
+            return path
+        }
+        var uri = "file://"
+        if path.length() == 0 || LspUtil.charAt(path, 0) != "/" {
+            uri = uri + "/"
+        }
+        var i = 0
+        while i < path.length() {
+            let c = LspUtil.charAt(path, i)
+            if UriCodec.isUnreserved(c) {
+                uri = uri + c
+            } else {
+                let o = LspUtil.asciiOrd(c)
+                uri = uri + "%" + LspUtil.hexNibble(o / 16) + LspUtil.hexNibble(o % 16)
+            }
+            i = i + 1
+        }
+        return uri
+    }
+
+    public static method uriToPath(uri: string): string {
+        var p = uri
+        if p.startsWith("file://") {
+            p = p.substring(7, p.length())
+        }
+        var out = ""
+        var i = 0
+        while i < p.length() {
+            let c = LspUtil.charAt(p, i)
+            if c == "%" && i + 2 < p.length() {
+                let hi = LspUtil.hexValue(LspUtil.charAt(p, i + 1))
+                let lo = LspUtil.hexValue(LspUtil.charAt(p, i + 2))
+                if hi >= 0 && lo >= 0 {
+                    out = out + LspUtil.chrAscii(hi * 16 + lo)
+                    i = i + 3
+                } else {
+                    out = out + c
+                    i = i + 1
+                }
+            } else {
+                out = out + c
+                i = i + 1
+            }
+        }
+        return out
+    }
+
+    private static method isUnreserved(c: string): bool {
+        let o = LspUtil.asciiOrd(c)
+        if o >= 48 && o <= 57 { return true }
+        if o >= 65 && o <= 90 { return true }
+        if o >= 97 && o <= 122 { return true }
+        if c == "/" || c == "-" || c == "_" || c == "." || c == "~" || c == ":" {
+            return true
+        }
+        return false
+    }
+}

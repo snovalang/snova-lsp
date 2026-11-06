@@ -6,6 +6,9 @@
 #include <string.h>
 #include <ctype.h>
 
+/* TODO(SL-2): URI codec + line-index math ported to src/Uri.snl and
+ * src/Document.snl. Docstore open/close and Windows path quirks stay in C. */
+
 char *lsp_uri_to_path(const char *uri) {
     if (!uri) return NULL;
     const char *p = uri;
@@ -36,7 +39,7 @@ char *lsp_uri_to_path(const char *uri) {
     raw[w] = '\0';
 
     char norm[SNOVAC_PATH_MAX];
-    normalize_path_into(raw, norm, sizeof(norm));
+    sn_driver_normalize_path(raw, norm, sizeof(norm));
     free(raw);
     return strdup(norm[0] ? norm : p);
 }
@@ -47,7 +50,7 @@ char *lsp_path_to_uri(const char *path) {
         return strdup(path);
     }
     char norm[SNOVAC_PATH_MAX];
-    normalize_path_into(path, norm, sizeof(norm));
+    sn_driver_normalize_path(path, norm, sizeof(norm));
     const char *p = norm[0] ? norm : path;
     size_t len = strlen(p);
     char *uri = (char *)malloc(8 + len * 3 + 1);
@@ -185,11 +188,11 @@ LspDocument *lsp_docstore_get(LspDocStore *store, const char *uri) {
 LspDocument *lsp_docstore_get_by_path(LspDocStore *store, const char *path) {
     if (!store || !path) return NULL;
     char norm[SNOVAC_PATH_MAX];
-    normalize_path_into(path, norm, sizeof(norm));
+    sn_driver_normalize_path(path, norm, sizeof(norm));
     for (size_t i = 0; i < store->len; i++) {
         if (!store->docs[i]->path) continue;
         char doc_norm[SNOVAC_PATH_MAX];
-        normalize_path_into(store->docs[i]->path, doc_norm, sizeof(doc_norm));
+        sn_driver_normalize_path(store->docs[i]->path, doc_norm, sizeof(doc_norm));
 #ifdef _WIN32
         if (strcasecmp(norm, doc_norm) == 0) return store->docs[i];
 #else
@@ -221,11 +224,31 @@ uint32_t lsp_pos_to_offset(const LspDocument *doc, LspPosition pos) {
     }
     uint32_t line_start = doc->line_offsets[pos.line];
     uint32_t next_line = (pos.line + 1 < doc->line_count) ? doc->line_offsets[pos.line + 1] : (uint32_t)doc->text_len;
-    uint32_t max_char = (next_line > line_start) ? (next_line - line_start) : 0;
-    if (pos.character > max_char) {
-        return line_start + max_char;
+    uint32_t end = next_line;
+    while (end > line_start && (doc->text[end - 1] == '\n' || doc->text[end - 1] == '\r')) end--;
+    uint32_t off = line_start, units = 0;
+    while (off < end && units < pos.character) {
+        unsigned char c = (unsigned char)doc->text[off];
+        uint32_t bytes = c < 0x80 ? 1 : (c & 0xe0) == 0xc0 ? 2 : (c & 0xf0) == 0xe0 ? 3 : (c & 0xf8) == 0xf0 ? 4 : 1;
+        if (off + bytes > end) bytes = 1;
+        uint32_t width = bytes == 4 ? 2 : 1;
+        if (units + width > pos.character) break;
+        units += width;
+        off += bytes;
     }
-    return line_start + pos.character;
+    return off;
+}
+
+static uint32_t utf16_units(const char *s, size_t n) {
+    uint32_t units = 0;
+    for (size_t i = 0; i < n;) {
+        unsigned char c = (unsigned char)s[i];
+        size_t bytes = c < 0x80 ? 1 : (c & 0xe0) == 0xc0 ? 2 : (c & 0xf0) == 0xe0 ? 3 : (c & 0xf8) == 0xf0 ? 4 : 1;
+        if (i + bytes > n) bytes = 1;
+        units += bytes == 4 ? 2 : 1;
+        i += bytes;
+    }
+    return units;
 }
 
 LspPosition lsp_offset_to_pos(const LspDocument *doc, uint32_t offset) {
@@ -249,7 +272,7 @@ LspPosition lsp_offset_to_pos(const LspDocument *doc, uint32_t offset) {
     }
 
     pos.line = (uint32_t)line;
-    pos.character = (uint32_t)(offset - doc->line_offsets[line]);
+    pos.character = utf16_units(doc->text + doc->line_offsets[line], offset - doc->line_offsets[line]);
     return pos;
 }
 

@@ -5,6 +5,9 @@
 #define _DEFAULT_SOURCE
 #endif
 
+/* TODO(SL-2): Ranking / sortText determinism ported to src/CompletionRank.snl.
+ * Candidate gathering still uses the C snovac analysis bridge. */
+
 #include "lsp_completion.h"
 #include "lsp_analysis.h"
 #include "json.h"
@@ -488,19 +491,19 @@ static void add_keywords_and_snippets(CompList *list, ComplContext ctx, bool has
         return;
     }
 
-    int type_score = (ctx == CTX_TYPE_POS) ? 95 : 65;
-    int type_bonus = (ctx == CTX_TYPE_POS) ? 30 : 0;
+    /* In a type position primitives outrank named types. Elsewhere they sit
+     * just under locals and declarations, so an empty completion still shows
+     * `int` and `string` without burying the names in scope. Prefix ranking
+     * then lifts an exact or prefix match. */
+    int type_score = (ctx == CTX_TYPE_POS) ? 100 : 76;
+    int type_bonus = (ctx == CTX_TYPE_POS) ? 40 : 0;
 
-    // Builtin Primitive Types
-    complist_add(list, "int", LSP_COMPLETION_KEYWORD, "type", "64-bit signed integer", "int", 1, NULL, type_score, type_bonus);
-    complist_add(list, "long", LSP_COMPLETION_KEYWORD, "type", "64-bit signed integer", "long", 1, NULL, type_score, type_bonus);
-    complist_add(list, "double", LSP_COMPLETION_KEYWORD, "type", "64-bit IEEE 754 floating point", "double", 1, NULL, type_score, type_bonus);
-    complist_add(list, "decimal", LSP_COMPLETION_KEYWORD, "type", "High-precision decimal number", "decimal", 1, NULL, type_score, type_bonus);
-    complist_add(list, "string", LSP_COMPLETION_KEYWORD, "type", "UTF-8 immutable string", "string", 1, NULL, type_score, type_bonus);
-    complist_add(list, "bool", LSP_COMPLETION_KEYWORD, "type", "Boolean true or false", "bool", 1, NULL, type_score, type_bonus);
-    complist_add(list, "char", LSP_COMPLETION_KEYWORD, "type", "Unicode character", "char", 1, NULL, type_score, type_bonus);
-    complist_add(list, "byte", LSP_COMPLETION_KEYWORD, "type", "8-bit unsigned byte", "byte", 1, NULL, type_score, type_bonus);
-    complist_add(list, "unit", LSP_COMPLETION_KEYWORD, "type", "Unit / void return type", "unit", 1, NULL, type_score, type_bonus);
+    for (size_t i = 0; i < sn_builtin_primitive_count(); i++) {
+        const char *name = sn_builtin_primitive_name(i);
+        const char *detail = sn_builtin_primitive_detail(i);
+        if (!name) continue;
+        complist_add(list, name, LSP_COMPLETION_KEYWORD, "type", detail ? detail : "primitive type", name, 1, NULL, type_score, type_bonus);
+    }
     complist_add(list, "List", LSP_COMPLETION_CLASS, "type List<T>", "Dynamic array collection", "List<${1:T}>", 2, NULL, type_score, type_bonus);
     complist_add(list, "Map", LSP_COMPLETION_CLASS, "type Map<K, V>", "Key-value hash map", "Map<${1:K}, ${2:V}>", 2, NULL, type_score, type_bonus);
     complist_add(list, "Option", LSP_COMPLETION_ENUM, "enum Option<T>", "Optional value: Some(T) or None", "Option<${1:T}>", 2, NULL, type_score, type_bonus);
@@ -859,6 +862,14 @@ static bool import_covers_package(const LspDocAnalysis *a, const char *package_n
     return false;
 }
 
+/* Import spelling comes from the compiler's discovered package graph. */
+static const char *completion_import_path(const LspDocAnalysis *a,
+                                         const SnPackageScopeEntry *entry) {
+    if (!a || !entry || !entry->package_name) return NULL;
+    SnPackageNode *node = sn_pkggraph_find(&a->graph, entry->package_name);
+    return node ? node->name : NULL;
+}
+
 /* Return the end of the package declaration line. Imports are inserted at
  * this point so the existing blank line and import formatting remain intact. */
 static uint32_t package_line_end(const LspDocument *doc, const char *package_name,
@@ -937,6 +948,44 @@ static void add_members_for_typerep(CompList *list, const LspDocAnalysis *a, con
             }
         }
     }
+}
+
+static int import_names_console(const LspDocAnalysis *a) {
+    size_t i;
+    if (!a) return 0;
+    if (import_covers_package(a, "builtin.console")) return 1;
+    for (i = 0; i < a->unit.imports.len; i++) {
+        const char *imp = SN_LIST_AT(a->unit.imports, const char, i);
+        size_t n;
+        if (!imp) continue;
+        if (strcmp(imp, "Console") == 0 || strcmp(imp, "builtin.console.Console") == 0) return 1;
+        n = strlen(imp);
+        if (n >= 8 && strcmp(imp + n - 8, ".Console") == 0) return 1;
+    }
+    return 0;
+}
+
+/* Console.println is the name editors complete. printline is the same intrinsic. */
+static void add_console_members(CompList *list, bool has_following_paren, const char *needed_import) {
+    int fmt = has_following_paren ? 1 : 2;
+    const char *call = has_following_paren ? "" : "($1)";
+    char insert_text[64];
+
+    snprintf(insert_text, sizeof(insert_text), "println%s", call);
+    complist_add(list, "println", LSP_COMPLETION_METHOD,
+                 "func println(msg: string): unit",
+                 "Prints a message and a newline",
+                 insert_text, fmt, needed_import, 96, 0);
+    snprintf(insert_text, sizeof(insert_text), "print%s", call);
+    complist_add(list, "print", LSP_COMPLETION_METHOD,
+                 "func print(msg: string): unit",
+                 "Prints a message",
+                 insert_text, fmt, needed_import, 90, 0);
+    snprintf(insert_text, sizeof(insert_text), "printline%s", call);
+    complist_add(list, "printline", LSP_COMPLETION_METHOD,
+                 "func printline(msg: string): unit",
+                 "Prints a message and a newline",
+                 insert_text, fmt, needed_import, 88, 0);
 }
 
 /* ── Main Completion Handler ─────────────────────────────────────────────── */
@@ -1028,6 +1077,11 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
                     found_receiver = true;
                 }
             }
+
+            if (strcmp(receiver_buf, "Console") == 0 && !complist_has_label(&list, "println")) {
+                const char *needed = (a && import_names_console(a)) ? NULL : "builtin.console.Console";
+                add_console_members(&list, has_following_paren, needed);
+            }
         }
     } else {
         // Non-member (General, Type, Decorator, Import) Completion
@@ -1097,9 +1151,11 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
             // Cross-package symbols from all dependency / workspace packages
             for (SnPackageScopeEntry *pe = a->resolver.packages; pe; pe = pe->next) {
                 if (!pe->package_name || !pe->scope) continue;
+                const char *import_path = completion_import_path(a, pe);
+                if (!import_path) continue;
                 if (pkg_name && strcmp(pe->package_name, pkg_name) == 0) continue;
 
-                bool in_imports = import_covers_package(a, pe->package_name);
+                bool in_imports = import_covers_package(a, import_path);
                 if (in_imports) continue;
 
                 for (size_t b = 0; b < pe->scope->nbuckets; b++) {
@@ -1140,7 +1196,7 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
                         if (ctx == CTX_TYPE_POS && sym->kind != SN_SYM_TYPE) continue;
 
                         char detail[512];
-                        snprintf(detail, sizeof(detail), "%s %s (from %s)", kind_str, sym->name, pe->package_name);
+                        snprintf(detail, sizeof(detail), "%s %s (from %s)", kind_str, sym->name, import_path);
 
                         char insert_text[256];
                         int insert_fmt = 1;
@@ -1153,9 +1209,9 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
 
                         int score = (ctx == CTX_TYPE_POS) ? 90 : 65;
                         const char *needed_import = (ctx == CTX_IMPORT_LINE ||
-                                                     import_covers_package(a, pe->package_name))
-                            ? NULL : pe->package_name;
-                        complist_add(&list, sym->name, kind, detail, pe->package_name,
+                                                     import_covers_package(a, import_path))
+                            ? NULL : import_path;
+                        complist_add(&list, sym->name, kind, detail, import_path,
                                      insert_text, insert_fmt, needed_import, score, type_bonus);
                     }
                 }
@@ -1239,7 +1295,15 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
         jb_kv_str(&jb, "newText", ci->insert_text ? ci->insert_text : ci->label);
         jb_end_obj(&jb);
 
-        if (ci->additional_import && package_end != UINT32_MAX) {
+        if (ci->additional_import) {
+            LspPosition edit_pos = import_pos;
+            const char *lead = import_newline;
+            char import_text[SNOVAC_PATH_MAX + 32];
+            if (package_end == UINT32_MAX) {
+                edit_pos.line = 0;
+                edit_pos.character = 0;
+                lead = "";
+            }
             jb_key(&jb, "additionalTextEdits");
             jb_start_arr(&jb);
             jb_start_obj(&jb);
@@ -1247,19 +1311,18 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
             jb_start_obj(&jb);
             jb_key(&jb, "start");
             jb_start_obj(&jb);
-            jb_kv_int(&jb, "line", import_pos.line);
-            jb_kv_int(&jb, "character", import_pos.character);
+            jb_kv_int(&jb, "line", edit_pos.line);
+            jb_kv_int(&jb, "character", edit_pos.character);
             jb_end_obj(&jb);
             jb_key(&jb, "end");
             jb_start_obj(&jb);
-            jb_kv_int(&jb, "line", import_pos.line);
-            jb_kv_int(&jb, "character", import_pos.character);
+            jb_kv_int(&jb, "line", edit_pos.line);
+            jb_kv_int(&jb, "character", edit_pos.character);
             jb_end_obj(&jb);
             jb_end_obj(&jb);
 
-            char import_text[SNOVAC_PATH_MAX + 32];
             snprintf(import_text, sizeof(import_text), "%simport %s%s",
-                     import_newline, ci->additional_import, import_newline);
+                     lead, ci->additional_import, import_newline);
             jb_kv_str(&jb, "newText", import_text);
             jb_end_obj(&jb);
             jb_end_arr(&jb);

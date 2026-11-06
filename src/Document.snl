@@ -1,0 +1,73 @@
+package Snova.Lsp
+
+import builtin.collections.collections.types
+
+/* -- Doc:{LineIndex}
+ *
+ * -- Description: Deterministic line-offset table for a document snapshot using
+ *   Builtin `Array<int>` storage. Line 0 always starts at offset 0.
+ */
+public class LineIndex {
+    private var offsets: Array<int>
+    private var text: string
+
+    public static method fromText(text: string): LineIndex {
+        var offsets: Array<int> = []
+        offsets.push(0)
+        var i = 0
+        while i < text.length() {
+            if LspUtil.charAt(text, i) == "\n" {
+                offsets.push(i + 1)
+            }
+            i = i + 1
+        }
+        return LineIndex(offsets, text)
+    }
+
+    public method lineCount(): int {
+        return this.offsets.length()
+    }
+
+    public method offsetOfLine(line: int): int {
+        if line < 0 {
+            return 0
+        }
+        if line >= this.offsets.length() {
+            return this.text.length()
+        }
+        return this.offsets.get(line)
+    }
+
+    public method positionAt(offset: int): Position {
+        var off = offset
+        if off < 0 { off = 0 }
+        if off > this.text.length() { off = this.text.length() }
+        var line = 0
+        var i = 0
+        while i < this.offsets.length() {
+            if this.offsets.get(i) <= off {
+                line = i
+            } else {
+                break
+            }
+            i = i + 1
+        }
+        let start = this.offsets.get(line)
+        return Position.new(line, off - start)
+    }
+
+    public method offsetAt(pos: Position): int {
+        let start = this.offsetOfLine(pos.line)
+        var end = this.text.length()
+        if pos.line + 1 < this.offsets.length() {
+            end = this.offsets.get(pos.line + 1) - 1
+            if end < start { end = start }
+        }
+        var col = pos.character
+        if col < 0 { col = 0 }
+        let cand = start + col
+        if cand > end { return end }
+        if cand > this.text.length() { return this.text.length() }
+        return cand
+    }
+}

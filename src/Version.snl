@@ -1,0 +1,17 @@
+package Snova.Lsp
+
+/* -- Doc:{LspVersion}
+ *
+ * -- Description: Single snl mirror of the repo VERSION file. Bump this string
+ *   in the same commit that bumps VERSION so serverInfo stays consistent.
+ */
+public class LspVersion {
+    /* -- Doc:{current}
+     *
+     * -- Description: Returns the snova-lsp semver string (MAJOR.MINOR.PATCH).
+     * -- Returns: Version string identical to the repository VERSION file.
+     */
+    public static method current(): string {
+        return "1.3.0"
+    }
+}

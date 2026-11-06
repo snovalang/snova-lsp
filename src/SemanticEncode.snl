@@ -1,0 +1,76 @@
+package Snova.Lsp
+
+/* -- Doc:{SemanticEncoder}
+ *
+ * -- Description: Orders absolute semantic tokens by (line, startCharacter) using
+ *   an index-array insertion sort (avoids struct Array.set which can fault on
+ *   some runtimes), then emits LSP relative deltas. Pure and deterministic.
+ */
+public class SemanticEncoder {
+    /* -- Doc:{encodeDataArray}
+     *
+     * -- Description: Builds `{"data":[dl,ds,len,type,mod,...]}` after sorting.
+     *   Identical token sets always produce identical JSON.
+     */
+    public static method encodeDataArray(tokens: Array<SemanticToken>): string {
+        var order: Array<int> = []
+        var i = 0
+        while i < tokens.length() {
+            order.push(i)
+            i = i + 1
+        }
+
+        // Insertion-sort indices by (line, startCharacter).
+        i = 1
+        while i < order.length() {
+            let keyIdx = order.get(i)
+            let key = tokens.get(keyIdx)
+            var j = i
+            while j > 0 {
+                let prevIdx = order.get(j - 1)
+                let prev = tokens.get(prevIdx)
+                var swap = false
+                if key.line < prev.line {
+                    swap = true
+                } else if key.line == prev.line && key.startCharacter < prev.startCharacter {
+                    swap = true
+                }
+                if swap {
+                    order.set(j, prevIdx)
+                    j = j - 1
+                } else {
+                    break
+                }
+            }
+            order.set(j, keyIdx)
+            i = i + 1
+        }
+
+        let jb = JsonBuilder.new()
+        jb.startObj()
+        jb.key("data")
+        jb.startArr()
+        var prevLine = 0
+        var prevStart = 0
+        i = 0
+        while i < order.length() {
+            let t = tokens.get(order.get(i))
+            let dl = t.line - prevLine
+            var ds = t.startCharacter - prevStart
+            if dl != 0 {
+                ds = t.startCharacter
+            }
+            jb.intValue(dl)
+            jb.intValue(ds)
+            jb.intValue(t.length)
+            jb.intValue(t.tokenType)
+            jb.intValue(t.modifiers)
+            prevLine = t.line
+            prevStart = t.startCharacter
+            i = i + 1
+        }
+        jb.endArr()
+        jb.endObj()
+        return jb.toString()
+    }
+}

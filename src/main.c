@@ -5,6 +5,10 @@
 #define _DEFAULT_SOURCE
 #endif
 
+/* TODO(SL-2): JSON-RPC initialize / response shaping ported to src/Rpc.snl and
+ * src/Main.snl (determinism self-test). The production stdio server loop and
+ * snovac analysis bridge remain in C until snl owns byte-oriented I/O. */
+
 #include "lsp_protocol.h"
 #include "lsp_transport.h"
 #include "lsp_document.h"
@@ -24,6 +28,12 @@
 #include <string.h>
 #include <stdbool.h>
 #include <inttypes.h>
+
+/* mod.sns and snova.sns are manifests even though .sns is also a script extension. */
+static int document_is_manifest(const LspDocument *doc, const char *lang_id) {
+    if (lang_id && strcmp(lang_id, "snova-manifest") == 0) return 1;
+    return doc && doc->path && lsp_is_manifest_file(doc->path);
+}
 
 /* Emit diagnostics for a specific file path (may or may not be open in store).
  * When the document is open, line offsets are used for precise conversion.
@@ -248,15 +258,14 @@ static void send_response(LspTransport *t, const JsonVal *id, const char *result
     jb_end_obj(&jb);
     char *msg = jb_take(&jb);
     if (msg) {
-        // Log the id being responded to and a preview of the result payload
+        // Keep protocol logs compact; transport logs the payload size.
         if (id && id->kind == JSON_NUMBER) {
-            lsp_log(t, "[LSP OUT] response id=%" PRId64 " result=%.200s",
-                    (int64_t)id->num_val, msg);
+            lsp_log(t, "[LSP OUT] response id=%" PRId64,
+                    (int64_t)id->num_val);
         } else if (id && id->kind == JSON_STRING) {
-            lsp_log(t, "[LSP OUT] response id=\"%s\" result=%.200s",
-                    id->str_val, msg);
+            lsp_log(t, "[LSP OUT] response id=\"%s\"", id->str_val);
         } else {
-            lsp_log(t, "[LSP OUT] response id=null result=%.200s", msg);
+            lsp_log(t, "[LSP OUT] response id=null");
         }
         lsp_transport_write_message(t, msg, strlen(msg));
         free(msg);
@@ -264,6 +273,11 @@ static void send_response(LspTransport *t, const JsonVal *id, const char *result
 }
 
 int main(int argc, char **argv) {
+    /* The compiler's builtin discovery uses the running executable location
+     * as one of its roots. Initialize it here too, since this is the LSP
+     * process embedding the compiler driver and package graph. */
+    sn_driver_set_exe_dir(argv[0]);
+
     const char *log_path = NULL;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
@@ -370,7 +384,10 @@ int main(int argc, char **argv) {
             jb_key(&res, "serverInfo");
             jb_start_obj(&res);
             jb_kv_str(&res, "name", "snova-lsp");
-            jb_kv_str(&res, "version", "1.0.0");
+#ifndef LSP_VERSION
+#define LSP_VERSION "0.0.0"
+#endif
+            jb_kv_str(&res, "version", LSP_VERSION);
             jb_end_obj(&res);
 
             jb_end_obj(&res);
@@ -389,27 +406,19 @@ int main(int argc, char **argv) {
                 const char *text     = json_get_str(td, "text", "");
                 LspDocument *doc = lsp_docstore_open(&doc_store, uri, version, text, strlen(text));
                 if (doc) {
-                    /* Route manifest files (mod.sno / snova-manifest language) to
-                       the dedicated manifest analyser; all other .sno files go through
-                       the full compiler pipeline. */
-                    bool is_manifest = (strcmp(lang_id, "snova-manifest") == 0);
-                    if (!is_manifest && doc->path) {
-                        /* Also detect by file name in case the editor doesn't set languageId */
-                        const char *base = strrchr(doc->path, '/');
-                        if (!base) base = strrchr(doc->path, '\\');
-                        base = base ? base + 1 : doc->path;
-                        is_manifest = (strcmp(base, "mod.sno") == 0 ||
-                                       strcmp(base, "snova.mod") == 0 ||
-                                       strcmp(base, "snova.sno") == 0);
-                    }
-                    LspDocAnalysis *a = is_manifest
-                        ? lsp_engine_analyze_manifest(&engine, doc)
-                        : lsp_engine_analyze_document(&engine, &doc_store, doc);
-                    if (a) {
-                        if (is_manifest)
-                            publish_diagnostics(&transport, doc, a);
-                        else
-                            publish_all_diagnostics(&transport, &doc_store, doc, a);
+                    /* Manifests are mod.sns / snova.sns. Other .snl and .sns files are Snovalang. */
+                    bool is_manifest = document_is_manifest(doc, lang_id);
+                    bool is_source = doc->path && lsp_is_snovalang_source(doc->path) && !is_manifest;
+                    if (is_manifest || is_source) {
+                        LspDocAnalysis *a = is_manifest
+                            ? lsp_engine_analyze_manifest(&engine, doc)
+                            : lsp_engine_analyze_document(&engine, &doc_store, doc);
+                        if (a) {
+                            if (is_manifest)
+                                publish_diagnostics(&transport, doc, a);
+                            else
+                                publish_all_diagnostics(&transport, &doc_store, doc, a);
+                        }
                     }
                 }
             }
@@ -423,23 +432,18 @@ int main(int argc, char **argv) {
                 const char *text = json_get_str(last_change, "text", "");
                 LspDocument *doc = lsp_docstore_update(&doc_store, uri, version, text, strlen(text));
                 if (doc) {
-                    bool is_manifest = false;
-                    if (doc->path) {
-                        const char *base = strrchr(doc->path, '/');
-                        if (!base) base = strrchr(doc->path, '\\');
-                        base = base ? base + 1 : doc->path;
-                        is_manifest = (strcmp(base, "mod.sno") == 0 ||
-                                       strcmp(base, "snova.mod") == 0 ||
-                                       strcmp(base, "snova.sno") == 0);
-                    }
-                    LspDocAnalysis *a = is_manifest
-                        ? lsp_engine_analyze_manifest(&engine, doc)
-                        : lsp_engine_analyze_document(&engine, &doc_store, doc);
-                    if (a) {
-                        if (is_manifest)
-                            publish_diagnostics(&transport, doc, a);
-                        else
-                            publish_all_diagnostics(&transport, &doc_store, doc, a);
+                    bool is_manifest = document_is_manifest(doc, NULL);
+                    bool is_source = doc->path && lsp_is_snovalang_source(doc->path) && !is_manifest;
+                    if (is_manifest || is_source) {
+                        LspDocAnalysis *a = is_manifest
+                            ? lsp_engine_analyze_manifest(&engine, doc)
+                            : lsp_engine_analyze_document(&engine, &doc_store, doc);
+                        if (a) {
+                            if (is_manifest)
+                                publish_diagnostics(&transport, doc, a);
+                            else
+                                publish_all_diagnostics(&transport, &doc_store, doc, a);
+                        }
                     }
                 }
             }

@@ -1,0 +1,58 @@
+package Snova.Lsp
+
+import builtin.core.types.values
+
+/* -- Doc:{LspFraming}
+ *
+ * -- Description: Pure Content-Length framing helpers (LSP over stdio).
+ *   Format and parse are deterministic string transforms with no I/O.
+ *   Host stdin/stdout bridging remains in C until Runtime exposes byte streams.
+ *   Length formatting uses Builtin `int.toString()`; header parsing returns
+ *   Builtin `Option<int>`.
+ */
+public class LspFraming {
+    /* -- Doc:{formatMessage}
+     *
+     * -- Description: Wraps a JSON payload with a Content-Length CRLF header.
+     */
+    public static method formatMessage(jsonPayload: string): string {
+        let lengthStr = jsonPayload.length().toString()
+        return "Content-Length: " + lengthStr + "\r\n\r\n" + jsonPayload
+    }
+
+    /* -- Doc:{parseContentLength}
+     *
+     * -- Description: Reads the Content-Length header into Builtin `Option<int>`.
+     */
+    public static method parseContentLength(headerText: string): Option<int> {
+        var start = 0
+        var i = 0
+        let n = headerText.length()
+        while i <= n {
+            var atEnd = false
+            if i == n {
+                atEnd = true
+            } else if LspUtil.charAt(headerText, i) == "\n" {
+                atEnd = true
+            }
+            if atEnd {
+                var line = headerText.substring(start, i)
+                if line.endsWith("\r") {
+                    line = line.substring(0, line.length() - 1)
+                }
+                line = line.trim()
+                let lower = line.toLower()
+                if lower.startsWith("content-length:") {
+                    let colon = line.indexOf(":")
+                    if colon >= 0 {
+                        let valStr = line.substring(colon + 1, line.length()).trim()
+                        return LspUtil.parsePositiveInt(valStr)
+                    }
+                }
+                start = i + 1
+            }
+            i = i + 1
+        }
+        return None
+    }
+}

@@ -14,11 +14,125 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <sys/stat.h>
+
+int lsp_is_snovalang_source(const char *path) {
+    size_t n;
+    if (!path) return 0;
+    n = strlen(path);
+    if (n >= 4 && strcmp(path + n - 4, ".snl") == 0) return 1;
+    if (n >= 4 && strcmp(path + n - 4, ".sns") == 0) return 1;
+    return 0;
+}
+
+int lsp_is_manifest_file(const char *path) {
+    const char *base;
+    if (!path || !path[0]) return 0;
+    base = strrchr(path, '/');
+    if (!base) base = strrchr(path, '\\');
+    base = base ? base + 1 : path;
+    return strcmp(base, "mod.sns") == 0 ||
+           strcmp(base, "snova.sns") == 0 ||
+           strcmp(base, "snova.mod") == 0 ||
+           strcmp(base, "snova.toml") == 0 ||
+           strcmp(base, "Snovalang.toml") == 0;
+}
+
+/* The compiler still discovers mod.sno. Projects now ship mod.sns / snova.sns,
+   so fill the same project fields when that file is found above `start_path`. */
+static void lsp_fill_sns_project(SnProject *proj, const char *start_path) {
+    static const char *names[] = {"mod.sns", "snova.sns"};
+    char start_dir[SNOVAC_PATH_MAX];
+    char cur[SNOVAC_PATH_MAX];
+    int depth;
+
+    if (!proj || proj->has_manifest || !start_path || !start_path[0]) return;
+    if (sn_driver_path_is_dir(start_path)) {
+        snprintf(start_dir, sizeof(start_dir), "%s", start_path);
+    } else {
+        sn_driver_dirname_into(start_path, start_dir, sizeof(start_dir));
+    }
+    sn_driver_normalize_path(start_dir, cur, sizeof(cur));
+
+    for (depth = 0; depth < 32; depth++) {
+        size_t i;
+        for (i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+            char candidate[SNOVAC_PATH_MAX + 32];
+            char src_dir[SNOVAC_PATH_MAX + 16];
+            char deps[SNOVAC_PATH_MAX + 32];
+            int written = snprintf(candidate, sizeof(candidate), "%s/%s", cur, names[i]);
+            if (written < 0 || (size_t)written >= sizeof(candidate)) continue;
+            if (!sn_driver_path_is_file(candidate)) continue;
+            proj->has_manifest = 1;
+            sn_driver_normalize_path(cur, proj->manifest_dir, sizeof(proj->manifest_dir));
+            snprintf(src_dir, sizeof(src_dir), "%s/src", cur);
+            if (sn_driver_path_is_dir(src_dir)) {
+                sn_driver_normalize_path(src_dir, proj->source_root, sizeof(proj->source_root));
+            } else {
+                sn_driver_normalize_path(cur, proj->source_root, sizeof(proj->source_root));
+            }
+            snprintf(deps, sizeof(deps), "%s/.snovalang/deps", cur);
+            if (sn_driver_path_is_dir(deps)) {
+                sn_driver_normalize_path(deps, proj->deps_root, sizeof(proj->deps_root));
+            }
+            return;
+        }
+        if (strcmp(cur, "/") == 0) return;
+        {
+            char parent[SNOVAC_PATH_MAX];
+            char next[SNOVAC_PATH_MAX];
+            snprintf(parent, sizeof(parent), "%s/..", cur);
+            sn_driver_normalize_path(parent, next, sizeof(next));
+            if (strcmp(next, cur) == 0) return;
+            memcpy(cur, next, sizeof(cur));
+        }
+    }
+}
+
+/* Walk a directory and index only .snl sources and .sns scripts.
+   Manifest files and every other extension are ignored. */
+static size_t lsp_scan_snovalang_tree(SnPackageGraph *g, const char *root) {
+    size_t count = 0;
+    DIR *d;
+    struct dirent *ent;
+
+    if (!g || !root || !root[0]) return 0;
+    d = opendir(root);
+    if (!d) return 0;
+
+    while ((ent = readdir(d)) != NULL) {
+        char path[4096];
+        int written;
+        struct stat st;
+
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+            continue;
+        }
+        written = snprintf(path, sizeof(path), "%s/%s", root, ent->d_name);
+        if (written < 0 || (size_t)written >= sizeof(path)) {
+            continue;
+        }
+        if (stat(path, &st) != 0) {
+            continue;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            count += lsp_scan_snovalang_tree(g, path);
+            continue;
+        }
+        if (!S_ISREG(st.st_mode) || !lsp_is_snovalang_source(path) || lsp_is_manifest_file(path)) {
+            continue;
+        }
+        count++;
+        sn_pkggraph_scan_single_file(g, path);
+    }
+    closedir(d);
+    return count;
+}
 
 void lsp_engine_init(LspAnalysisEngine *engine, const char *workspace_root) {
     engine->analyses = NULL;
     engine->workspace_root[0] = '\0';
-    engine->builtin_dir[0] = '\0';
     if (workspace_root && workspace_root[0]) {
         lsp_engine_set_workspace_root(engine, workspace_root);
     }
@@ -26,8 +140,7 @@ void lsp_engine_init(LspAnalysisEngine *engine, const char *workspace_root) {
 
 void lsp_engine_set_workspace_root(LspAnalysisEngine *engine, const char *workspace_root) {
     if (!workspace_root) return;
-    normalize_path_into(workspace_root, engine->workspace_root, sizeof(engine->workspace_root));
-    find_builtin_root_for_project(engine->workspace_root, engine->builtin_dir, sizeof(engine->builtin_dir));
+    sn_driver_normalize_path(workspace_root, engine->workspace_root, sizeof(engine->workspace_root));
 }
 
 static void diag_list_init(CapturedDiagList *dl) {
@@ -65,6 +178,23 @@ static void capture_diagnostic(void *ctx, SnDiagLevel level, int code,
                                SnSpan span, const char *message,
                                const char *file_path) {
     diag_list_add((CapturedDiagList *)ctx, code, level, span, message, file_path);
+}
+
+/*
+ * Compiler diagnostics are captured by callback for the IDE. The formatted
+ * text must not go to the LSP stdout, and it must not use tmpfile(): on
+ * Windows that call returns NULL for a normal user, and the next fprintf
+ * on a NULL FILE* kills the process during the first didOpen.
+ */
+static FILE *open_discard_file(void) {
+#ifdef _WIN32
+    const char *null_path = "NUL";
+#else
+    const char *null_path = "/dev/null";
+#endif
+    FILE *f = fopen(null_path, "wb");
+    if (f) return f;
+    return tmpfile();
 }
 
 static void free_analysis(LspDocAnalysis *a) {
@@ -215,8 +345,10 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
 
     sn_diag_init(&a->diag, a->path ? a->path : "", doc->text, doc->text_len);
     sn_diag_set_callback(&a->diag, capture_diagnostic, &a->diags);
-    FILE *diag_mem = tmpfile();
-    a->diag.out = diag_mem;
+    FILE *diag_mem = open_discard_file();
+    if (diag_mem) {
+        a->diag.out = diag_mem;
+    }
     a->diag.use_color = 0;
 
     // 1. Lex
@@ -237,9 +369,10 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
     SnProject ws_proj;
     memset(&ws_proj, 0, sizeof(ws_proj));
     if (engine->workspace_root[0]) {
-        project_discover(engine->workspace_root, &ws_proj);
+        sn_project_discover(engine->workspace_root, &ws_proj);
+        lsp_fill_sns_project(&ws_proj, engine->workspace_root);
         if (ws_proj.has_manifest && ws_proj.source_root[0] && strcmp(ws_proj.source_root, "/") != 0) {
-            scan_project_roots(&a->graph, &ws_proj);
+            lsp_scan_snovalang_tree(&a->graph, ws_proj.source_root);
         }
     }
 
@@ -247,41 +380,42 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
     memset(&proj, 0, sizeof(proj));
     const char *scan_start = (a->path && a->path[0] && strcmp(a->path, "/") != 0) ? a->path : engine->workspace_root;
     if (scan_start && scan_start[0]) {
-        project_discover(scan_start, &proj);
+        sn_project_discover(scan_start, &proj);
+        lsp_fill_sns_project(&proj, scan_start);
         if (proj.has_manifest && proj.source_root[0] && strcmp(proj.source_root, "/") != 0 &&
             (!ws_proj.has_manifest || strcmp(proj.source_root, ws_proj.source_root) != 0)) {
-            scan_project_roots(&a->graph, &proj);
+            lsp_scan_snovalang_tree(&a->graph, proj.source_root);
         }
     }
 
     // Always scan .snovalang/deps to ensure direct/indirect packages are complete
     const char *deps_dir = NULL;
     char ws_deps[SNOVAC_PATH_MAX + 32];
-    if (proj.deps_root[0] && path_is_dir(proj.deps_root)) {
+    if (proj.deps_root[0] && sn_driver_path_is_dir(proj.deps_root)) {
         deps_dir = proj.deps_root;
-    } else if (ws_proj.deps_root[0] && path_is_dir(ws_proj.deps_root)) {
+    } else if (ws_proj.deps_root[0] && sn_driver_path_is_dir(ws_proj.deps_root)) {
         deps_dir = ws_proj.deps_root;
     } else if (engine->workspace_root[0]) {
         snprintf(ws_deps, sizeof(ws_deps), "%s/.snovalang/deps", engine->workspace_root);
-        if (path_is_dir(ws_deps)) {
+        if (sn_driver_path_is_dir(ws_deps)) {
             deps_dir = ws_deps;
         }
     }
     if (deps_dir) {
-        sn_pkggraph_scan_root(&a->graph, deps_dir);
+        lsp_scan_snovalang_tree(&a->graph, deps_dir);
     }
 
-    if (a->path && a->path[0] && path_is_file(a->path)) {
+    if (a->path && a->path[0] && sn_driver_path_is_file(a->path) && lsp_is_snovalang_source(a->path)) {
         sn_pkggraph_scan_single_file(&a->graph, a->path);
     }
 
-    const char *source_for_builtin = (ws_proj.has_manifest && ws_proj.source_root[0]) ? ws_proj.source_root :
-                                     ((proj.has_manifest && proj.source_root[0]) ? proj.source_root : engine->workspace_root);
+    /* Match the compiler's project graph setup: discover builtins from the
+     * document's project source root, with the same compiler-owned fallbacks
+     * (SNOVA_BUILTIN_DIR and executable location). */
+    const char *source_for_builtin = (proj.has_manifest && proj.source_root[0]) ? proj.source_root :
+                                     ((ws_proj.has_manifest && ws_proj.source_root[0]) ? ws_proj.source_root : engine->workspace_root);
     char builtin_find[SNOVAC_PATH_MAX];
-    if (engine->builtin_dir[0]) {
-        sn_pkggraph_scan_root(&a->graph, engine->builtin_dir);
-        sn_pkggraph_load_native_manifest(&a->graph, engine->builtin_dir);
-    } else if (source_for_builtin && source_for_builtin[0] && find_builtin_root_for_project(source_for_builtin, builtin_find, sizeof(builtin_find))) {
+    if (source_for_builtin && source_for_builtin[0] && sn_project_find_builtin_root(source_for_builtin, builtin_find, sizeof(builtin_find))) {
         sn_pkggraph_scan_root(&a->graph, builtin_find);
         sn_pkggraph_load_native_manifest(&a->graph, builtin_find);
     }
@@ -291,7 +425,7 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
     SnList cycle;
     memset(&cycle, 0, sizeof(cycle));
     if (sn_pkggraph_find_cycle(&a->graph, &cycle)) {
-        report_import_cycle(&a->diag, &a->graph, &cycle);
+        sn_cmd_report_import_cycle(&a->diag, &a->graph, &cycle);
     }
 
     // 4. Resolve symbols & prelude
@@ -304,7 +438,7 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
     sn_checker_init(&a->checker, &a->arena, &a->intern, &a->diag, &a->resolver, &a->types);
     const char *check_prefix = source_for_builtin;
     SnBodyCheckScope scope = { .own_prefix = check_prefix };
-    check_all_bodies(&a->checker, &a->resolver, &a->graph, &a->arena, &scope);
+    sn_cmd_check_all_bodies(&a->checker, &a->resolver, &a->graph, &a->arena, &scope);
 
     a->diag.quiet = 1;
     if (diag_mem) {
@@ -652,7 +786,7 @@ const SnSymbol *lsp_find_symbol_at(const LspDocAnalysis *a, const LspDocument *d
 }
 
 /* -----------------------------------------------------------------------
- * Snova Manifest Analysis  (mod.sno / snova.mod)
+ * Snova Manifest Analysis  (mod.sns / snova.sns / snova.mod)
  * Parses the manifest text and produces LSP diagnostics for:
  *   - missing/malformed "module" declaration
  *   - missing/malformed "snova" version declaration

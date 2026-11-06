@@ -5,6 +5,10 @@
 #include <stdio.h>
 #include <ctype.h>
 
+/* TODO(SL-2): JSON build/escape logic is ported to src/Json.snl (package
+ * Snova.Lsp). Keep this C pool parser until the snl server owns the stdio
+ * host loop and can replace request decoding end-to-end. */
+
 struct JsonPoolChunk {
     struct JsonPoolChunk *next;
     size_t cap;

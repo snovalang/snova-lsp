@@ -4,6 +4,10 @@
 #include <string.h>
 #include <stdarg.h>
 
+/* TODO(SL-2): Content-Length framing helpers live in src/Transport.snl
+ * (LspFraming). This C file remains for binary stdin/stdout until Runtime
+ * exposes byte-oriented stdio to snl. */
+
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
@@ -156,7 +160,7 @@ char *lsp_transport_read_message(LspTransport *t, size_t *out_len) {
         }
         t->read_buf_len = remaining;
 
-        lsp_log(t, "<-- RECV [%zu bytes]: %s", content_length, msg);
+        lsp_log(t, "<-- RECV [%zu bytes]", content_length);
         return msg;
     }
 }
@@ -165,7 +169,7 @@ bool lsp_transport_write_message(LspTransport *t, const char *json_payload, size
     if (!json_payload) return false;
     if (len == 0) len = strlen(json_payload);
 
-    lsp_log(t, "--> SEND [%zu bytes]: %s", len, json_payload);
+    lsp_log(t, "--> SEND [%zu bytes]", len);
 
     int r = fprintf(t->out, "Content-Length: %zu\r\n\r\n%s", len, json_payload);
     if (r < 0) return false;

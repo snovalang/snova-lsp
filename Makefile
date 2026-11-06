@@ -4,11 +4,18 @@ CPPFLAGS ?= -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -D_DARWIN_C_SOURCE
 WARN = -Wall -Wextra -Wpedantic -Wshadow -Wno-sign-conversion
 BUILD ?= build
 
-SNOVAC_DIR ?= ../snovac
-SNOVAC_LIB ?= $(SNOVAC_DIR)/build/libsnovart.a
-SNOVAC_CHECK_OBJ ?= $(SNOVAC_DIR)/build/cmd_check.o
+# Single source of truth for serverInfo.version (see VERSION + src/Version.snl).
+LSP_VERSION := $(shell tr -d ' \n\r\t' < VERSION 2>/dev/null || printf '0.0.0')
+CPPFLAGS += -DLSP_VERSION=\"$(LSP_VERSION)\"
 
-INCLUDES = -Isrc -I$(SNOVAC_DIR)
+SNOVAC_REPO ?= https://github.com/snovalang/snovac.git
+SNOVAC_DIR ?= $(BUILD)/deps/snovac
+SNOVAC_LIB ?= $(SNOVAC_DIR)/build/libsnovart.a
+
+INCLUDES = -Isrc \
+	-I$(SNOVAC_DIR)/src/base -I$(SNOVAC_DIR)/src/lex -I$(SNOVAC_DIR)/src/parse \
+	-I$(SNOVAC_DIR)/src/ast -I$(SNOVAC_DIR)/src/sema -I$(SNOVAC_DIR)/src/eval \
+	-I$(SNOVAC_DIR)/src/bc -I$(SNOVAC_DIR)/src/native -I$(SNOVAC_DIR)/src/driver
 
 ifeq ($(OS),Windows_NT)
   EXE := .exe
@@ -24,15 +31,22 @@ BIN = $(BIN_DIR)/snova-lsp$(EXE)
 TEST_BIN = $(BUILD)/test_completion$(EXE)
 
 SRCS = src/json.c src/lsp_transport.c src/lsp_document.c src/lsp_analysis.c \
-       src/lsp_definition.c src/lsp_hover.c src/lsp_symbols.c src/lsp_completion.c \
+       src/lsp_definition.c src/lsp_hover.c src/lsp_symbols.c src/lsp_symbol_span.c \
+       src/lsp_completion.c \
        src/lsp_code_action.c src/lsp_semantic.c src/lsp_references.c src/lsp_signature.c src/main.c
 
 OBJS = $(addprefix $(BUILD)/,$(notdir $(SRCS:.c=.o)))
 
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
+SNOVA_STD_DIR ?= $(HOME)/.snovalang/std/src
 
-.PHONY: all rebuild clean test install
+# snl toolchain (optional). test-snl copies sources to a temp tree whose path
+# does not contain "/snova-" so project-run accepts Main as an app entrypoint.
+SNL ?= $(SNOVAC_DIR)/build/snl
+SNOVA_STD_PATH ?= $(SNOVAC_DIR)/builtin
+
+.PHONY: all rebuild clean test test-snl test-all install
 
 all: $(BIN)
 
@@ -41,32 +55,62 @@ rebuild:
 	$(MAKE) all
 
 $(BUILD):
-	mkdir $(BUILD)
+	mkdir -p $(BUILD)
 
+ifneq ($(BIN_DIR),$(BUILD))
 $(BIN_DIR):
 	if not exist tools mkdir tools
 	if not exist tools\bin mkdir tools\bin
+endif
 
-$(SNOVAC_LIB):
+ifeq ($(OS),Windows_NT)
+$(SNOVAC_DIR)/Makefile:
+	@if not exist "$(dir $(SNOVAC_DIR))" mkdir "$(dir $(SNOVAC_DIR))"
+	git clone --depth 1 "$(SNOVAC_REPO)" "$(SNOVAC_DIR)"
+else
+$(SNOVAC_DIR)/Makefile:
+	mkdir -p "$(dir $(SNOVAC_DIR))"
+	git clone --depth 1 "$(SNOVAC_REPO)" "$(SNOVAC_DIR)"
+endif
+
+$(SNOVAC_LIB): $(SNOVAC_DIR)/Makefile
 	$(MAKE) -C $(SNOVAC_DIR) all
 
-$(BUILD)/%.o: src/%.c | $(BUILD)
+$(BUILD)/%.o: src/%.c | $(BUILD) $(SNOVAC_DIR)/Makefile
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARN) $(INCLUDES) -c -o $@ $<
 
 $(BIN): $(OBJS) $(SNOVAC_LIB) | $(BIN_DIR)
-	$(CC) $(CFLAGS) -o $@ $(OBJS) $(SNOVAC_CHECK_OBJ) $(SNOVAC_LIB) $(EXTRA_LIBS)
+	$(CC) $(CFLAGS) -o $@ $(OBJS) $(SNOVAC_LIB) $(EXTRA_LIBS)
 
 $(TEST_BIN): tests/test_completion.c $(filter-out $(BUILD)/main.o,$(OBJS)) $(SNOVAC_LIB) | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARN) $(INCLUDES) -o $@ tests/test_completion.c $(filter-out $(BUILD)/main.o,$(OBJS)) $(SNOVAC_CHECK_OBJ) $(SNOVAC_LIB) $(EXTRA_LIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARN) $(INCLUDES) -o $@ tests/test_completion.c $(filter-out $(BUILD)/main.o,$(OBJS)) $(SNOVAC_LIB) $(EXTRA_LIBS)
 
 test: $(TEST_BIN)
 	./$(TEST_BIN)
+
+# Runs the deterministic .snl self-test. Requires a built `snl` + builtins.
+test-snl:
+	@test -x "$(SNL)" || (echo "error: snl not found at $(SNL); build snovac first" >&2; exit 1)
+	@test -d "$(SNOVA_STD_PATH)" || (echo "error: builtins not found at $(SNOVA_STD_PATH)" >&2; exit 1)
+	@snl_abs=$$(cd "$$(dirname "$(SNL)")" && pwd)/$$(basename "$(SNL)") && \
+	  std_abs=$$(cd "$(SNOVA_STD_PATH)" && pwd) && \
+	  tmpdir=$$(mktemp -d /tmp/lspsnl.XXXXXX) && \
+	  mkdir -p "$$tmpdir/src" && \
+	  cp src/*.snl "$$tmpdir/src/" && \
+	  cp mod.sns "$$tmpdir/" && \
+	  ( cd "$$tmpdir" && SNOVA_STD_PATH="$$std_abs" "$$snl_abs" run --project . ); \
+	  rc=$$?; rm -rf "$$tmpdir"; exit $$rc
+
+test-all: test test-snl
 
 install: $(BIN)
 	@mkdir -p $(BINDIR)
 	install -m 755 $(BIN) $(BINDIR)/snova-lsp$(EXE)
 	ln -sf $(BINDIR)/snova-lsp$(EXE) $(BINDIR)/snovalang-lsp$(EXE)
+	@mkdir -p "$(SNOVA_STD_DIR)"
+	cp -R "$(SNOVAC_DIR)/builtin/." "$(SNOVA_STD_DIR)/"
 	@echo "✓ Installed snova-lsp and snovalang-lsp to $(BINDIR)"
+	@echo "✓ Installed compiler builtins to $(SNOVA_STD_DIR)"
 
 clean:
 	rm -rf $(BUILD)

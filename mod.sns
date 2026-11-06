@@ -1,0 +1,14 @@
+module github.com/snovalang/snova-lsp https://github.com/snovalang/snova-lsp
+
+snova "1.0.0"
+
+dependencies(
+    paths = [
+        "src",
+        ".snovalang/deps"
+    ],
+    direct = [
+    ],
+    indirect = [
+    ]
+)
