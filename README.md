@@ -35,8 +35,8 @@ The installer downloads both source repositories, builds them, and places
 `snova-lsp` in `~/.local/bin` and the matching compiler builtin sources in
 `~/.snovalang/std/src`, the standard discovery path used by `snovac`. Add the
 binary directory to `PATH` if needed. For a checkout, `make` downloads
-`snovalang/snovac` automatically; `make install` installs both the server and
-its compiler builtins.
+`snovalang/snovac` automatically; `make install` installs the server and its
+compiler builtins.
 
 ```sh
 make test-snl
