@@ -12,6 +12,7 @@
 #include "lsp_imports.h"
 #include "lsp_analysis.h"
 #include "json.h"
+#include "lsp_fuzzy.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -111,93 +112,48 @@ static void complist_add(CompList *list, const char *label, LspCompletionKind ki
     ci->final_score = 0;
 }
 
-/* ── Ranking & Fuzzy Matching (Gopls & Rust-Analyzer tier ranking) ────────── */
+/* ── Ranking (gopls model) ────────────────────────────────────────────────
+ *
+ * gopls gives every candidate a relevance score (scope depth, expected type,
+ * kind) and multiplies it by the fuzzy match score of the label against the
+ * typed prefix (completion/format.go: `cand.score *= matchScore`). A label
+ * that does not match is dropped. Relevance here is the existing tier score
+ * plus three times the type bonus; the matcher is the gopls port in
+ * lsp_fuzzy.c. Scores are integers (x100) so the order is deterministic.
+ */
 
-static bool acronym_matches(const char *label, const char *prefix) {
-    if (!label || !prefix || !prefix[0]) return false;
-    size_t pi = 0;
-    size_t plen = strlen(prefix);
-
-    for (size_t i = 0; label[i] && pi < plen; i++) {
-        bool is_hump = (i == 0) || (isupper((unsigned char)label[i]) && !isupper((unsigned char)label[i - 1])) ||
-                       (label[i - 1] == '_' && label[i] != '_');
-        if (is_hump) {
-            if (tolower((unsigned char)label[i]) == tolower((unsigned char)prefix[pi])) {
-                pi++;
-            }
-        }
-    }
-    return (pi == plen);
-}
-
-static bool subsequence_matches(const char *label, const char *prefix) {
-    if (!label || !prefix || !prefix[0]) return false;
-    size_t pi = 0;
-    size_t plen = strlen(prefix);
-    for (size_t i = 0; label[i] && pi < plen; i++) {
-        if (tolower((unsigned char)label[i]) == tolower((unsigned char)prefix[pi])) {
-            pi++;
-        }
-    }
-    return (pi == plen);
-}
-
-static bool case_insensitive_contains(const char *text, const char *needle) {
-    if (!text || !needle || !needle[0]) return false;
-    size_t n = strlen(needle);
-    for (const char *p = text; *p; p++) {
-        size_t i = 0;
-        while (i < n && p[i] &&
-               tolower((unsigned char)p[i]) == tolower((unsigned char)needle[i])) i++;
-        if (i == n) return true;
-    }
-    return false;
-}
+#define MATCH_SCALE 100
 
 static int compute_match_bonus(const char *label, const char *prefix) {
-    if (!prefix || !prefix[0]) return 0;
+    if (!prefix || !prefix[0]) return MATCH_SCALE;
     if (!label) return -1;
-
-    size_t plen = strlen(prefix);
-
-    // Tier 1: Exact case-sensitive match
-    if (strcmp(label, prefix) == 0) return 120;
-
-    // Tier 2: Exact case-insensitive match
-    if (strcasecmp(label, prefix) == 0) return 100;
-
-    // Tier 3: Prefix case-sensitive match
-    if (strncmp(label, prefix, plen) == 0) return 80;
-
-    // Tier 4: Prefix case-insensitive match
-    if (strncasecmp(label, prefix, plen) == 0) return 60;
-
-    // Tier 5: Acronym match (camelCase humps)
-    if (acronym_matches(label, prefix)) return 35;
-
-    // Tier 6: Subsequence fuzzy match
-    if (subsequence_matches(label, prefix)) return 20;
-
-    // Tier 7: Substring match
-    if (case_insensitive_contains(label, prefix)) return 15;
-
-    return -1;
+    float s = lsp_fuzzy_match(prefix, label);
+    return s > 0.0f ? (int)(s * MATCH_SCALE + 0.5f) : -1;
 }
 
 static void rank_and_sort_candidates(CompList *list, const char *prefix) {
     if (!list || list->len == 0) return;
+    bool has_prefix = prefix && prefix[0];
+    LspFuzzyMatcher *matcher = has_prefix ? lsp_fuzzy_new(prefix) : NULL;
 
-    // 1. Calculate scores and filter out non-matching candidates
+    // 1. relevance x match; non-matching labels are filtered out
     for (size_t i = 0; i < list->len; i++) {
         CompItem *ci = &list->items[i];
-        int mb = compute_match_bonus(ci->label, prefix);
-        if (prefix && prefix[0] && mb < 0) {
-            ci->final_score = -1;
-            continue;
+        int relevance = ci->base_score + (ci->type_bonus * 3);
+        if (relevance < 1) relevance = 1;
+        if (!has_prefix) {
+            ci->match_bonus = MATCH_SCALE;
+        } else {
+            float s = lsp_fuzzy_score(matcher, ci->label);
+            if (s <= 0.0f) {
+                ci->final_score = -1;
+                continue;
+            }
+            ci->match_bonus = (int)(s * MATCH_SCALE + 0.5f);
         }
-        ci->match_bonus = (mb >= 0) ? mb : 0;
-        ci->final_score = ci->base_score + (ci->type_bonus * 3) + ci->match_bonus;
+        ci->final_score = relevance * ci->match_bonus;
     }
+    lsp_fuzzy_free(matcher);
 
     // 2. Compact valid items
     size_t dst = 0;
@@ -218,9 +174,12 @@ static void rank_and_sort_candidates(CompList *list, const char *prefix) {
     }
     list->len = dst;
 
-    // 3. Insertion sort
+    // 3. Stable insertion sort: score desc, then the case-sensitive exact
+    //    match, then shorter label, then case-insensitive label (gopls sorts
+    //    ties by label, which also prefers shorter candidates).
     for (size_t i = 1; i < list->len; i++) {
         CompItem key = list->items[i];
+        bool key_exact = has_prefix && strcmp(key.label, prefix) == 0;
         size_t j = i;
         while (j > 0) {
             CompItem *prev = &list->items[j - 1];
@@ -228,9 +187,12 @@ static void rank_and_sort_candidates(CompList *list, const char *prefix) {
             if (key.final_score > prev->final_score) {
                 swap = true;
             } else if (key.final_score == prev->final_score) {
+                bool prev_exact = has_prefix && strcmp(prev->label, prefix) == 0;
                 size_t klen = strlen(key.label);
                 size_t plen = strlen(prev->label);
-                if (klen < plen) {
+                if (key_exact != prev_exact) {
+                    swap = key_exact;
+                } else if (klen < plen) {
                     swap = true;
                 } else if (klen == plen && strcasecmp(key.label, prev->label) < 0) {
                     swap = true;
@@ -827,7 +789,10 @@ static void add_scope_symbols(CompList *list, SnScope *scope, ComplContext ctx, 
                     } else {
                         snprintf(detail, sizeof(detail), "%s %s", sym->is_mutable ? "var" : "let", sym->name);
                     }
-                    score = 90;
+                    /* gopls ranks inner scopes above outer ones
+                     * (stdScore * 0.99^depth): a body binding beats a
+                     * parameter of the same routine. */
+                    score = 96;
                     break;
                 case SN_SYM_PACKAGE:
                     kind = LSP_COMPLETION_MODULE;
@@ -1143,6 +1108,259 @@ static void add_import_path_items(CompList *list, const LspDocAnalysis *a, const
     }
 }
 
+/* ── Expected type & deep completion (gopls expectedCandidate / deepSearch) ──
+ *
+ * gopls infers the type the cursor position wants and multiplies the score of
+ * candidates of that type by highScore. When the type is known it also
+ * searches one level into in-scope values (fields and zero-argument methods),
+ * keeping only the best few such "deep" candidates (MaxDeepCompletions = 3).
+ * Snova positions with a known expected type:
+ *   let x: T = |      var x: T = |      x = |
+ *   return |          f(a, |)           recv.method(|)
+ */
+
+#define MAX_DEEP_COMPLETIONS 3
+
+typedef struct {
+    const LspDocAnalysis *a;
+    SnChecker *checker;
+    SnScope *scope;
+    const SnDecl *enclosing_type;
+} TypeCtx;
+
+static const char *ictx(const TypeCtx *tc, const char *s) {
+    return sn_intern_cstr((SnInternTable *)&tc->a->intern, s);
+}
+
+static SnSymbol *lookup_global_symbol(const TypeCtx *tc, const char *name) {
+    const LspDocAnalysis *a = tc->a;
+    const char *iname = ictx(tc, name);
+    const char *pkg = (a->unit.package && a->unit.package[0]) ? a->unit.package : "main";
+    SnScope *ps = sn_resolver_package_scope(&a->resolver, ictx(tc, pkg));
+    SnSymbol *s = ps ? sn_scope_lookup_local(ps, iname) : NULL;
+    for (size_t i = 0; !s && i < a->unit.imports.len; i++) {
+        const char *imp = SN_LIST_AT(a->unit.imports, const char, i);
+        SnScope *is = imp ? completion_import_scope(a, imp) : NULL;
+        s = is ? sn_scope_lookup_local(is, iname) : NULL;
+    }
+    if (!s && a->resolver.prelude_scope) s = sn_scope_lookup_local(a->resolver.prelude_scope, iname);
+    return s;
+}
+
+/* Type named by annotation text such as `int`, `User`, `Array<int>`, `User?`.
+ * Generic arguments are dropped: matching compares the named declaration. */
+static SnTypeRep *type_from_text(const TypeCtx *tc, const char *text) {
+    char name[128];
+    size_t n = 0;
+    while (text[n] && (isalnum((unsigned char)text[n]) || text[n] == '_' || text[n] == '.') && n + 1 < sizeof(name)) {
+        name[n] = text[n];
+        n++;
+    }
+    name[n] = '\0';
+    if (!n) return NULL;
+    SnTypeTable *t = (SnTypeTable *)&tc->a->types;
+    static const struct { const char *n; SnTypeRep *(*fn)(SnTypeTable *); } prim[] = {
+        {"int", sn_type_int}, {"long", sn_type_long}, {"double", sn_type_double}, {"decimal", sn_type_decimal},
+        {"string", sn_type_string}, {"bool", sn_type_bool}, {"char", sn_type_char}, {"float", sn_type_float},
+        {"byte", sn_type_byte}, {"unit", sn_type_unit},
+    };
+    for (size_t i = 0; i < sizeof(prim) / sizeof(prim[0]); i++) {
+        if (strcmp(name, prim[i].n) == 0) return prim[i].fn(t);
+    }
+    const char *dot = strrchr(name, '.');
+    SnSymbol *sym = lookup_global_symbol(tc, dot ? dot + 1 : name);
+    if (!sym || sym->kind != SN_SYM_TYPE) return NULL;
+    return sn_type_named(t, sym, NULL, 0);
+}
+
+static bool types_match(const SnTypeRep *want, const SnTypeRep *got) {
+    if (!want || !got || want->tag == SN_T_ERROR || got->tag == SN_T_ERROR) return false;
+    if (want->tag == SN_T_ANY || want->tag == SN_T_TYPEVAR) return false; /* matches everything: no signal */
+    if (want == got) return true;
+    if (want->tag != got->tag) return false;
+    if (want->tag == SN_T_NAMED) {
+        return want->decl && got->decl && want->decl->name && got->decl->name &&
+               strcmp(want->decl->name, got->decl->name) == 0;
+    }
+    if (want->tag == SN_T_ARRAY) {
+        return want->nargs && got->nargs && types_match(want->args[0], got->args[0]);
+    }
+    return want->tag != SN_T_FUNC; /* primitives compare by tag */
+}
+
+static bool is_ident_byte(char c) { return isalnum((unsigned char)c) || c == '_'; }
+
+/* Dotted identifier chain ending at `end` (exclusive) in text. */
+static size_t chain_start(const char *text, size_t begin, size_t end) {
+    size_t p = end;
+    while (p > begin && (is_ident_byte(text[p - 1]) || text[p - 1] == '.')) p--;
+    return p;
+}
+
+static const SnDecl *callee_decl(const TypeCtx *tc, const char *callee) {
+    const char *dot = strrchr(callee, '.');
+    if (!dot) {
+        SnSymbol *s = lookup_global_symbol(tc, callee);
+        return s && s->decl && (s->kind == SN_SYM_FUNC || s->kind == SN_SYM_METHOD) ? s->decl : NULL;
+    }
+    char recv[256];
+    snprintf(recv, sizeof(recv), "%.*s", (int)(dot - callee), callee);
+    const SnDecl *type_decl = NULL;
+    if (strcmp(recv, "this") == 0) {
+        type_decl = tc->enclosing_type;
+    } else {
+        SnTypeRep *rt = lsp_infer_expr_type_at(tc->a, tc->checker, tc->scope, recv);
+        if (rt && rt->tag == SN_T_NAMED && rt->decl) type_decl = rt->decl->decl;
+        if (!type_decl) {
+            SnSymbol *ts = lookup_global_symbol(tc, recv); /* static call: Type.method( */
+            if (ts && ts->kind == SN_SYM_TYPE) type_decl = ts->decl;
+        }
+    }
+    if (!type_decl) return NULL;
+    SnScope *ms = sn_resolver_type_scope(&tc->a->resolver, type_decl);
+    SnSymbol *m = ms ? sn_scope_lookup_local(ms, ictx(tc, dot + 1)) : NULL;
+    if (m && m->decl) return m->decl;
+    for (size_t i = 0; i < type_decl->members.len; i++) {
+        const SnDecl *d = SN_LIST_AT(type_decl->members, SnDecl, i);
+        if (d && d->name && strcmp(d->name, dot + 1) == 0) return d;
+    }
+    return NULL;
+}
+
+static SnTypeRep *expected_type_at(const TypeCtx *tc, const LspDocument *doc, uint32_t word_start) {
+    if (!tc->a || !doc || !doc->text) return NULL;
+    const char *t = doc->text;
+    size_t p = word_start;
+    while (p > 0 && (t[p - 1] == ' ' || t[p - 1] == '\t')) p--;
+    size_t line_begin = p;
+    while (line_begin > 0 && t[line_begin - 1] != '\n') line_begin--;
+
+    /* return | */
+    if (p >= 6 && strncmp(t + p - 6, "return", 6) == 0 && (p == 6 || !is_ident_byte(t[p - 7]))) {
+        return tc->checker->current_return_type;
+    }
+
+    /* let x: T = |   /   x = | */
+    if (p > 0 && t[p - 1] == '=' && (p < 2 || strchr("=!<>+-*/", t[p - 2]) == NULL)) {
+        size_t eq = p - 1;
+        size_t colon = 0;
+        for (size_t i = line_begin; i < eq; i++) if (t[i] == ':') colon = i + 1;
+        if (colon) {
+            while (colon < eq && (t[colon] == ' ' || t[colon] == '\t')) colon++;
+            char ty[128];
+            size_t n = eq - colon < sizeof(ty) - 1 ? eq - colon : sizeof(ty) - 1;
+            memcpy(ty, t + colon, n);
+            ty[n] = '\0';
+            return type_from_text(tc, ty);
+        }
+        size_t e = eq;
+        while (e > line_begin && (t[e - 1] == ' ' || t[e - 1] == '\t')) e--;
+        size_t s0 = chain_start(t, line_begin, e);
+        if (s0 < e) {
+            char lhs[256];
+            snprintf(lhs, sizeof(lhs), "%.*s", (int)(e - s0), t + s0);
+            if (strncmp(lhs, "let", 3) != 0 && strncmp(lhs, "var", 3) != 0) {
+                return lsp_infer_expr_type_at(tc->a, tc->checker, tc->scope, lhs);
+            }
+        }
+        return NULL;
+    }
+
+    /* f(a, |): find the unmatched '(' and count commas at depth 0 */
+    size_t limit = word_start > 2000 ? word_start - 2000 : 0;
+    int depth = 0, arg = 0;
+    for (size_t i = word_start; i > limit; i--) {
+        char c = t[i - 1];
+        if (c == ')' || c == ']' || c == '}') depth++;
+        else if (c == '[' || c == '{') { if (depth == 0) return NULL; depth--; }
+        else if (c == ';') { if (depth == 0) return NULL; }
+        else if (c == ',' && depth == 0) arg++;
+        else if (c == '(') {
+            if (depth > 0) { depth--; continue; }
+            size_t e = i - 1;
+            while (e > 0 && (t[e - 1] == ' ' || t[e - 1] == '\t')) e--;
+            size_t s0 = chain_start(t, limit, e);
+            if (s0 == e) return NULL;
+            char callee[256];
+            snprintf(callee, sizeof(callee), "%.*s", (int)(e - s0), t + s0);
+            const SnDecl *d = callee_decl(tc, callee);
+            if (!d || (size_t)arg >= d->params.len) return NULL;
+            const SnParam *prm = SN_LIST_AT(d->params, SnParam, arg);
+            return prm && prm->type ? sn_check_resolve_type(tc->checker, prm->type) : NULL;
+        }
+    }
+    return NULL;
+}
+
+/* Type of a candidate already in the list, found again by name. */
+static SnTypeRep *candidate_type(const TypeCtx *tc, const CompItem *ci) {
+    const char *iname = ictx(tc, ci->label);
+    if (ci->additional_import) return NULL;
+    if (tc->scope) {
+        SnSymbol *s = sn_scope_lookup(tc->scope, iname);
+        if (s && (s->kind == SN_SYM_LOCAL || s->kind == SN_SYM_PARAM)) return s->value_type;
+    }
+    const SnDecl *d = NULL;
+    if (tc->enclosing_type) {
+        for (size_t i = 0; i < tc->enclosing_type->members.len && !d; i++) {
+            const SnDecl *m = SN_LIST_AT(tc->enclosing_type->members, SnDecl, i);
+            if (m && m->name && strcmp(m->name, ci->label) == 0) d = m;
+        }
+    }
+    if (!d) {
+        SnSymbol *s = lookup_global_symbol(tc, ci->label);
+        if (s && (s->kind == SN_SYM_FUNC || s->kind == SN_SYM_CONST)) d = s->decl;
+    }
+    if (!d) return NULL;
+    if (d->kind == SN_DECL_FUNC || d->kind == SN_DECL_METHOD) return d->ret ? sn_check_resolve_type(tc->checker, d->ret) : NULL;
+    if (d->type) return sn_check_resolve_type(tc->checker, d->type);
+    return NULL;
+}
+
+static void apply_expected_type(CompList *list, const TypeCtx *tc, const SnTypeRep *want, bool has_following_paren) {
+    if (!want) return;
+    for (size_t i = 0; i < list->len; i++) {
+        CompItem *ci = &list->items[i];
+        if (ci->kind == LSP_COMPLETION_KEYWORD || ci->kind == LSP_COMPLETION_SNIPPET ||
+            ci->kind == LSP_COMPLETION_MODULE) continue;
+        if (types_match(want, candidate_type(tc, ci))) {
+            ci->type_bonus += (ci->base_score + 2) / 3; /* relevance x2 */
+        }
+    }
+
+    /* deep candidates: `local.field` / `local.method()` of the wanted type */
+    if (!tc->scope || !tc->scope->buckets) return;
+    int added = 0;
+    for (size_t b = 0; b < tc->scope->nbuckets && added < MAX_DEEP_COMPLETIONS; b++) {
+        for (SnSymbol *sym = tc->scope->buckets[b]; sym && added < MAX_DEEP_COMPLETIONS; sym = sym->next) {
+            if (sym->kind != SN_SYM_LOCAL && sym->kind != SN_SYM_PARAM) continue;
+            const SnTypeRep *vt = sym->value_type;
+            if (!vt || vt->tag != SN_T_NAMED || !vt->decl || !vt->decl->decl) continue;
+            const SnDecl *td = vt->decl->decl;
+            for (size_t m = 0; m < td->members.len && added < MAX_DEEP_COMPLETIONS; m++) {
+                const SnDecl *md = SN_LIST_AT(td->members, SnDecl, m);
+                if (!md || !md->name || md->vis == SN_VIS_PRIVATE || md->is_static) continue;
+                bool is_call = md->kind == SN_DECL_METHOD;
+                if (is_call && md->params.len != 0) continue;
+                if (!is_call && md->kind != SN_DECL_FIELD) continue;
+                SnTypeRep *mt = is_call ? (md->ret ? sn_check_resolve_type(tc->checker, md->ret) : NULL)
+                                        : (md->type ? sn_check_resolve_type(tc->checker, md->type) : NULL);
+                if (!types_match(want, mt)) continue;
+                char label[256], insert[260], detail[300], ty[128];
+                snprintf(label, sizeof(label), "%s.%s", sym->name, md->name);
+                snprintf(insert, sizeof(insert), "%s%s", label, is_call && !has_following_paren ? "()" : "");
+                format_typerep_string(mt, ty, sizeof(ty));
+                snprintf(detail, sizeof(detail), "%s %s: %s", is_call ? "method" : "field", label, ty);
+                /* gopls favours shallow matches: depth 1 costs 10% */
+                int base = 96 * 9 / 10;
+                complist_add(list, label, is_call ? LSP_COMPLETION_METHOD : LSP_COMPLETION_FIELD, detail, NULL,
+                             insert, 1, NULL, base, (base + 2) / 3);
+                added++;
+            }
+        }
+    }
+}
+
 char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const LspDocument *doc, LspPosition pos) {
     if (!doc) return NULL;
 
@@ -1398,6 +1616,13 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
 
         // Keywords, snippets, types, decorators
         add_keywords_and_snippets(&list, ctx, has_following_paren);
+
+        if (a && ctx == CTX_GENERAL) {
+            TypeCtx tc = { a, &checker, local_scope, enclosing_type };
+            uint32_t word_start = cursor_offset >= (uint32_t)strlen(prefix_buf)
+                ? cursor_offset - (uint32_t)strlen(prefix_buf) : 0;
+            apply_expected_type(&list, &tc, expected_type_at(&tc, doc, word_start), has_following_paren);
+        }
     }
 
     // Rank and Sort candidates

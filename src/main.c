@@ -231,6 +231,44 @@ static void publish_diagnostics(LspTransport *t, const LspDocument *doc, const L
     }
 }
 
+static void write_id(JsonBuilder *jb, const JsonVal *id) {
+    if (id && id->kind == JSON_NUMBER) jb_kv_int(jb, "id", (int64_t)id->num_val);
+    else if (id && id->kind == JSON_STRING) jb_kv_str(jb, "id", id->str_val);
+    else jb_kv_null(jb, "id");
+}
+
+/* JSON-RPC error response. LSP 3.17 RequestFailed (-32803) carries the
+ * reason a request could not be served, e.g. a refused rename. */
+static void send_error(LspTransport *t, const JsonVal *id, int code, const char *message) {
+    JsonBuilder jb;
+    jb_init(&jb);
+    jb_start_obj(&jb);
+    jb_kv_str(&jb, "jsonrpc", "2.0");
+    write_id(&jb, id);
+    jb_key(&jb, "error");
+    jb_start_obj(&jb);
+    jb_kv_int(&jb, "code", code);
+    jb_kv_str(&jb, "message", message ? message : "request failed");
+    jb_end_obj(&jb);
+    jb_end_obj(&jb);
+    char *msg = jb_take(&jb);
+    if (msg) {
+        lsp_log(t, "[LSP OUT] error code=%d message=%s", code, message ? message : "");
+        lsp_transport_write_message(t, msg, strlen(msg));
+        free(msg);
+    }
+}
+
+static LspPosition read_position(const JsonVal *params) {
+    const JsonVal *po = json_get_obj(params, "position");
+    LspPosition pos = { 0, 0 };
+    if (po) {
+        pos.line = (uint32_t)json_get_int(po, "line", 0);
+        pos.character = (uint32_t)json_get_int(po, "character", 0);
+    }
+    return pos;
+}
+
 static void send_response(LspTransport *t, const JsonVal *id, const char *result_json_raw, bool is_null) {
     JsonBuilder jb;
     jb_init(&jb);
@@ -350,6 +388,12 @@ int main(int argc, char **argv) {
             jb_kv_bool(&res, "signatureHelpProvider", true);
             jb_kv_bool(&res, "definitionProvider", true);
             jb_kv_bool(&res, "referencesProvider", true);
+            jb_kv_bool(&res, "documentHighlightProvider", true);
+            jb_kv_bool(&res, "workspaceSymbolProvider", true);
+            jb_key(&res, "renameProvider");
+            jb_start_obj(&res);
+            jb_kv_bool(&res, "prepareProvider", true);
+            jb_end_obj(&res);
             jb_kv_bool(&res, "implementationProvider", true);
             jb_key(&res, "semanticTokensProvider");
             jb_start_obj(&res);
@@ -521,12 +565,40 @@ int main(int argc, char **argv) {
             if (td && po) {
                 LspDocument *doc = lsp_docstore_get(&doc_store, json_get_str(td, "uri", ""));
                 LspPosition pos = {(uint32_t)json_get_int(po, "line", 0), (uint32_t)json_get_int(po, "character", 0)};
+                const JsonVal *ctx = json_get_obj(params, "context");
+                bool include_decl = ctx ? json_get_bool(ctx, "includeDeclaration", true) : true;
                 char *res_json = strcmp(method, "textDocument/references") == 0
-                    ? lsp_references_query(&engine, &doc_store, doc, pos)
+                    ? lsp_references_query(&engine, &doc_store, doc, pos, include_decl)
                     : lsp_implementation_query(&engine, &doc_store, doc, pos);
                 send_response(&transport, id, res_json, res_json == NULL);
                 if (res_json) free(res_json);
             } else send_response(&transport, id, "[]", false);
+        } else if (strcmp(method, "textDocument/documentHighlight") == 0) {
+            const JsonVal *td = json_get_obj(params, "textDocument");
+            LspDocument *doc = td ? lsp_docstore_get(&doc_store, json_get_str(td, "uri", "")) : NULL;
+            char *res_json = doc ? lsp_document_highlight_query(&engine, &doc_store, doc, read_position(params)) : NULL;
+            send_response(&transport, id, res_json, res_json == NULL);
+            free(res_json);
+        } else if (strcmp(method, "textDocument/prepareRename") == 0 ||
+                   strcmp(method, "textDocument/rename") == 0) {
+            const JsonVal *td = json_get_obj(params, "textDocument");
+            LspDocument *doc = td ? lsp_docstore_get(&doc_store, json_get_str(td, "uri", "")) : NULL;
+            char *error = NULL;
+            char *res_json = NULL;
+            if (doc && strcmp(method, "textDocument/rename") == 0) {
+                res_json = lsp_rename_query(&engine, &doc_store, doc, read_position(params),
+                                            json_get_str(params, "newName", ""), &error);
+            } else if (doc) {
+                res_json = lsp_prepare_rename_query(&engine, &doc_store, doc, read_position(params), &error);
+            }
+            if (error) send_error(&transport, id, -32803, error);
+            else send_response(&transport, id, res_json, res_json == NULL);
+            free(error);
+            free(res_json);
+        } else if (strcmp(method, "workspace/symbol") == 0) {
+            char *res_json = lsp_workspace_symbol_query(&engine, &doc_store, json_get_str(params, "query", ""));
+            send_response(&transport, id, res_json, res_json == NULL);
+            free(res_json);
         } else if (strcmp(method, "textDocument/semanticTokens/full") == 0) {
             const JsonVal *td = json_get_obj(params, "textDocument");
             LspDocument *doc = td ? lsp_docstore_get(&doc_store, json_get_str(td, "uri", "")) : NULL;

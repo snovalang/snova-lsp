@@ -1287,6 +1287,9 @@ int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
     printf("Running LSP completion & code action unit tests...\n");
+    /* Every test resolves Option/Result against the snovac checkout's
+     * builtins, never whatever happens to be in ~/.snovalang. */
+    setenv("SNOVA_BUILTIN_DIR", SNOVA_TEST_BUILTIN_DIR, 1);
     test_general_ranking();
     test_acronym_matching();
     test_type_context_ranking();

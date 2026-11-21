@@ -415,7 +415,13 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
     const char *source_for_builtin = (proj.has_manifest && proj.source_root[0]) ? proj.source_root :
                                      ((ws_proj.has_manifest && ws_proj.source_root[0]) ? ws_proj.source_root : engine->workspace_root);
     char builtin_find[SNOVAC_PATH_MAX];
-    if (source_for_builtin && source_for_builtin[0] && sn_project_find_builtin_root(source_for_builtin, builtin_find, sizeof(builtin_find))) {
+    /* A loose file (no manifest, no workspace root) still needs builtins:
+     * without them Option/Result do not resolve and the checker's quiet
+     * fallback drops their generic arguments. SNOVA_BUILTIN_DIR and the
+     * executable location do not depend on a project root. */
+    const char *builtin_probe = (source_for_builtin && source_for_builtin[0]) ? source_for_builtin :
+                                ((a->path && a->path[0]) ? a->path : ".");
+    if (sn_project_find_builtin_root(builtin_probe, builtin_find, sizeof(builtin_find))) {
         sn_pkggraph_scan_root(&a->graph, builtin_find);
         sn_pkggraph_load_native_manifest(&a->graph, builtin_find);
     }
