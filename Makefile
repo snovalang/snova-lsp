@@ -9,6 +9,7 @@ LSP_VERSION := $(shell tr -d ' \n\r\t' < VERSION 2>/dev/null || printf '0.0.0')
 CPPFLAGS += -DLSP_VERSION=\"$(LSP_VERSION)\"
 
 SNOVAC_REPO ?= https://github.com/snovalang/snovac.git
+SNOVAC_COMMIT ?= 62352e4de259f4f0700ab511c850f1725fba7130
 SNOVAC_DIR ?= $(BUILD)/deps/snovac
 SNOVAC_LIB ?= $(SNOVAC_DIR)/build/libsnovart.a
 
@@ -60,22 +61,17 @@ $(BUILD):
 
 ifneq ($(BIN_DIR),$(BUILD))
 $(BIN_DIR):
-	if not exist tools mkdir tools
-	if not exist tools\bin mkdir tools\bin
+	mkdir -p "$(BIN_DIR)"
 endif
 
-ifeq ($(OS),Windows_NT)
-$(SNOVAC_DIR)/Makefile:
-	@if not exist "$(dir $(SNOVAC_DIR))" mkdir "$(dir $(SNOVAC_DIR))"
-	git clone --depth 1 "$(SNOVAC_REPO)" "$(SNOVAC_DIR)"
-else
 $(SNOVAC_DIR)/Makefile:
 	mkdir -p "$(dir $(SNOVAC_DIR))"
-	git clone --depth 1 "$(SNOVAC_REPO)" "$(SNOVAC_DIR)"
-endif
+	git clone --no-checkout --filter=blob:none "$(SNOVAC_REPO)" "$(SNOVAC_DIR)"
+	git -C "$(SNOVAC_DIR)" fetch --depth 1 origin "$(SNOVAC_COMMIT)"
+	git -C "$(SNOVAC_DIR)" checkout --detach FETCH_HEAD
 
 $(SNOVAC_LIB): $(SNOVAC_DIR)/Makefile
-	$(MAKE) -C $(SNOVAC_DIR) all
+	$(MAKE) -C $(SNOVAC_DIR) OS= BUILD=build all
 
 $(BUILD)/%.o: src/%.c | $(BUILD) $(SNOVAC_DIR)/Makefile
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARN) $(INCLUDES) -c -o $@ $<
