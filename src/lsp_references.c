@@ -116,7 +116,12 @@ static bool same_file(const char *x, const char *y) {
     if (!x || !y) return false;
     if (strcmp(x, y) == 0) return true;
     char rx[SNOVAC_PATH_MAX], ry[SNOVAC_PATH_MAX];
+#ifdef _WIN32
+    return _fullpath(rx, x, sizeof(rx)) && _fullpath(ry, y, sizeof(ry)) &&
+           _stricmp(rx, ry) == 0;
+#else
     return realpath(x, rx) && realpath(y, ry) && strcmp(rx, ry) == 0;
+#endif
 }
 
 static LspDocument *store_doc_for_path(LspDocStore *store, const char *path) {

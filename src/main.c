@@ -385,7 +385,18 @@ int main(int argc, char **argv) {
             jb_start_obj(&res);
             jb_kv_int(&res, "textDocumentSync", (int)LSP_SYNC_FULL);
             jb_kv_bool(&res, "hoverProvider", true);
-            jb_kv_bool(&res, "signatureHelpProvider", true);
+            /* ServerCapabilities.signatureHelpProvider is SignatureHelpOptions,
+             * not a boolean. Strict LSP clients (including IntelliJ's LSP4J
+             * connector) reject `true` while decoding InitializeResult and
+             * wait until the initialization timeout. */
+            jb_key(&res, "signatureHelpProvider");
+            jb_start_obj(&res);
+            jb_key(&res, "triggerCharacters");
+            jb_start_arr(&res);
+            jb_str(&res, "(");
+            jb_str(&res, ",");
+            jb_end_arr(&res);
+            jb_end_obj(&res);
             jb_kv_bool(&res, "definitionProvider", true);
             jb_kv_bool(&res, "referencesProvider", true);
             jb_kv_bool(&res, "documentHighlightProvider", true);
