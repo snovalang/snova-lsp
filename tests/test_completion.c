@@ -853,7 +853,7 @@ static void test_completion_on_source_and_script(void) {
         assert(println != NULL);
         assert(json_get_arr(println, "additionalTextEdits") != NULL);
         assert(strstr(json_get_str(json_arr_at(json_get_arr(println, "additionalTextEdits"), 0), "newText", ""),
-                      "import builtin.console.Console") != NULL);
+                      "import builtin.io.console.output") != NULL);
         json_pool_destroy(pool);
         free(json_member);
         lsp_engine_destroy(&engine);
@@ -1061,6 +1061,228 @@ static void test_builtin_type_highlight(void) {
     printf("✓ test_builtin_type_highlight passed\n");
 }
 
+/* ── Import path completion and context-aware auto-import ─────────────────── */
+
+#if !defined(_WIN32)
+#ifndef SNOVA_TEST_BUILTIN_DIR
+#define SNOVA_TEST_BUILTIN_DIR "build/deps/snovac/builtin"
+#endif
+
+#define IMPORT_ROOT "/tmp/snova_lsp_import_test"
+
+static void write_file(const char *path, const char *text) {
+    FILE *f = fopen(path, "w");
+    assert(f != NULL);
+    fputs(text, f);
+    fclose(f);
+}
+
+/* Project with real compiler builtins, two project packages, and a second
+ * project file that already imports app.web (the "context"). */
+static void setup_import_workspace(void) {
+    assert(system("rm -rf " IMPORT_ROOT " && mkdir -p " IMPORT_ROOT "/src/app/web " IMPORT_ROOT "/src/app/jobs") == 0);
+    setenv("SNOVA_BUILTIN_DIR", SNOVA_TEST_BUILTIN_DIR, 1);
+    write_file(IMPORT_ROOT "/mod.sns", "module app\n\nsnova \"1.0.0\"\n");
+    write_file(IMPORT_ROOT "/src/app/web/Web.snl",
+        "package app.web\n\n"
+        "public struct Response {\n"
+        "    public let status: int\n"
+        "}\n");
+    write_file(IMPORT_ROOT "/src/app/jobs/Jobs.snl",
+        "package app.jobs\n\n"
+        "import app.web\n\n"
+        "public func runJobs(): int {\n"
+        "    return 0\n"
+        "}\n");
+}
+
+static JsonVal *query_items(LspAnalysisEngine *engine, LspDocStore *store, LspDocument *doc,
+                            uint32_t line, uint32_t character, JsonPool **out_pool, char **out_json) {
+    LspPosition pos = { .line = line, .character = character };
+    char *json = lsp_completion_query(engine, store, doc, pos);
+    assert(json != NULL);
+    JsonPool *pool = json_pool_create(strlen(json) + 1024);
+    const char *err = NULL;
+    JsonVal *root = json_parse(pool, json, strlen(json), &err);
+    assert(root != NULL);
+    *out_pool = pool;
+    *out_json = json;
+    return (JsonVal *)json_get_arr(root, "items");
+}
+
+static void test_import_path_completion(void) {
+    setup_import_workspace();
+    LspDocStore store;
+    lsp_docstore_init(&store);
+    LspAnalysisEngine engine;
+    lsp_engine_init(&engine, IMPORT_ROOT);
+
+    const char *code =
+        "package app\n"
+        "\n"
+        "import \n"
+        "import builtin.\n"
+        "import builtin.network.\n"
+        "import builtin.io.console.out\n"
+        "import builtin.network.http.server.\n"
+        "\n"
+        "func main(): int {\n"
+        "    return 0\n"
+        "}\n";
+    LspDocument *doc = lsp_docstore_open(&store, "file://" IMPORT_ROOT "/src/app/Main.snl", 1, code, strlen(code));
+    assert(doc != NULL);
+    JsonPool *pool;
+    char *json;
+    const JsonVal *item;
+
+    /* `import |`: first segments of builtin and project packages. */
+    JsonVal *items = query_items(&engine, &store, doc, 2, 7, &pool, &json);
+    assert(completion_has_label(items, "builtin", &item));
+    assert(json_get_int(item, "kind", 0) == LSP_COMPLETION_FOLDER);
+    assert(completion_has_label(items, "app", NULL));
+    assert(!completion_has_label(items, "builtin.io.console.output", NULL));
+    json_pool_destroy(pool); free(json);
+
+    /* `import builtin.|`: next segments only, edit replaces the empty partial. */
+    items = query_items(&engine, &store, doc, 3, 15, &pool, &json);
+    assert(completion_has_label(items, "io", NULL));
+    assert(completion_has_label(items, "network", &item));
+    const JsonVal *range = json_get_obj(json_get_obj(item, "textEdit"), "range");
+    assert(json_get_int(json_get_obj(range, "start"), "character", -1) == 15);
+    assert(!completion_has_label(items, "http", NULL));
+    json_pool_destroy(pool); free(json);
+
+    /* `import builtin.network.|` */
+    items = query_items(&engine, &store, doc, 4, 23, &pool, &json);
+    assert(completion_has_label(items, "http", NULL));
+    assert(completion_has_label(items, "transport", NULL));
+    json_pool_destroy(pool); free(json);
+
+    /* `import builtin.io.console.out|`: the last segment ends a package. */
+    items = query_items(&engine, &store, doc, 5, 29, &pool, &json);
+    assert(completion_has_label(items, "output", &item));
+    assert(json_get_int(item, "kind", 0) == LSP_COMPLETION_MODULE);
+    assert(strcmp(json_get_str(item, "detail", ""), "builtin.io.console.output") == 0);
+    range = json_get_obj(json_get_obj(item, "textEdit"), "range");
+    assert(json_get_int(json_get_obj(range, "start"), "character", -1) == 26);
+    json_pool_destroy(pool); free(json);
+
+    /* `import builtin.network.http.server.|`: symbols of that package. */
+    items = query_items(&engine, &store, doc, 6, 35, &pool, &json);
+    assert(completion_has_label(items, "HttpServer", &item));
+    assert(json_get_int(item, "kind", 0) == LSP_COMPLETION_CLASS);
+    json_pool_destroy(pool); free(json);
+
+    lsp_engine_destroy(&engine);
+    lsp_docstore_destroy(&store);
+    printf("✓ test_import_path_completion passed\n");
+}
+
+static void test_context_auto_import(void) {
+    setup_import_workspace();
+    LspDocStore store;
+    lsp_docstore_init(&store);
+    LspAnalysisEngine engine;
+    lsp_engine_init(&engine, IMPORT_ROOT);
+
+    const char *code =
+        "package app\n"
+        "\n"
+        "import builtin.errors.hierarchy.types\n"
+        "import builtin.runtime.host.api\n"
+        "\n"
+        "func main(): int {\n"
+        "    let r: Respo\n"
+        "    Console.\n"
+        "    return 0\n"
+        "}\n";
+    LspDocument *doc = lsp_docstore_open(&store, "file://" IMPORT_ROOT "/src/app/Main.snl", 1, code, strlen(code));
+    assert(doc != NULL);
+    JsonPool *pool;
+    char *json;
+
+    /* Both packages declare Response; the project's own app.web, already
+     * imported by app.jobs, ranks first. Each variant imports its package,
+     * sorted into the existing import block. */
+    JsonVal *items = query_items(&engine, &store, doc, 6, 16, &pool, &json);
+    int project_at = -1, builtin_at = -1;
+    for (size_t i = 0; i < json_arr_len(items); i++) {
+        const JsonVal *it = json_arr_at(items, i);
+        if (strcmp(json_get_str(it, "label", ""), "Response") != 0) continue;
+        const JsonVal *edits = json_get_arr(it, "additionalTextEdits");
+        assert(edits != NULL);
+        const JsonVal *edit = json_arr_at(edits, 0);
+        const char *text = json_get_str(edit, "newText", "");
+        uint32_t line = (uint32_t)json_get_int(json_get_obj(json_get_obj(edit, "range"), "start"), "line", -1);
+        if (strcmp(text, "import app.web\n") == 0) {
+            project_at = (int)i;
+            assert(line == 2); /* before builtin.errors..., alphabetical */
+        } else if (strcmp(text, "import builtin.network.http.data.types\n") == 0) {
+            builtin_at = (int)i;
+            assert(line == 3); /* between builtin.errors... and builtin.runtime... */
+        }
+    }
+    assert(project_at >= 0 && builtin_at >= 0);
+    assert(project_at < builtin_at);
+    json_pool_destroy(pool); free(json);
+
+    /* `Console.` without importing Console's package: members import it. */
+    items = query_items(&engine, &store, doc, 7, 12, &pool, &json);
+    const JsonVal *println;
+    assert(completion_has_label(items, "println", &println));
+    const JsonVal *edits = json_get_arr(println, "additionalTextEdits");
+    assert(edits != NULL);
+    assert(strcmp(json_get_str(json_arr_at(edits, 0), "newText", ""), "import builtin.io.console.output\n") == 0);
+    json_pool_destroy(pool); free(json);
+
+    /* Quick fix for a type that is not imported: project package preferred. */
+    const char *diags_json =
+        "[{\"range\":{\"start\":{\"line\":6,\"character\":11},\"end\":{\"line\":6,\"character\":19}},"
+        "\"code\":\"SNOVA0121\",\"message\":\"type `Response` is not imported\"}]";
+    const char *fixed =
+        "package app\n"
+        "\n"
+        "import builtin.errors.hierarchy.types\n"
+        "import builtin.runtime.host.api\n"
+        "\n"
+        "func main(): int {\n"
+        "    let r: Response\n"
+        "    return 0\n"
+        "}\n";
+    LspDocument *fdoc = lsp_docstore_update(&store, doc->uri, 2, fixed, strlen(fixed));
+    JsonPool *dpool = json_pool_create(strlen(diags_json) + 256);
+    const char *err = NULL;
+    JsonVal *diags = json_parse(dpool, diags_json, strlen(diags_json), &err);
+    assert(diags != NULL);
+    LspRange r = { .start = { 6, 11 }, .end = { 6, 19 } };
+    char *actions_json = lsp_code_action_query(&engine, &store, fdoc, r, diags);
+    assert(actions_json != NULL);
+    JsonPool *apool = json_pool_create(strlen(actions_json) + 1024);
+    JsonVal *actions = json_parse(apool, actions_json, strlen(actions_json), &err);
+    assert(actions != NULL && actions->kind == JSON_ARRAY);
+    const JsonVal *preferred = NULL;
+    bool saw_builtin = false;
+    for (size_t i = 0; i < json_arr_len(actions); i++) {
+        const JsonVal *act = json_arr_at(actions, i);
+        const char *title = json_get_str(act, "title", "");
+        if (strncmp(title, "Import '", 8) == 0 && json_get_bool(act, "isPreferred", false)) {
+            assert(preferred == NULL); /* exactly one preferred import */
+            preferred = act;
+        }
+        if (strstr(title, "builtin.network.http.data.types")) saw_builtin = true;
+    }
+    assert(preferred != NULL);
+    assert(strcmp(json_get_str(preferred, "title", ""), "Import 'app.web' (project)") == 0);
+    assert(saw_builtin);
+    json_pool_destroy(apool); free(actions_json);
+    json_pool_destroy(dpool);
+
+    lsp_engine_destroy(&engine);
+    lsp_docstore_destroy(&store);
+    printf("✓ test_context_auto_import passed\n");
+}
+#endif
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -1077,6 +1299,10 @@ int main(void) {
     test_sns_manifest_autoimport();
     test_builtin_type_ranking();
     test_builtin_type_highlight();
-    printf("All completion and code action tests passed successfully! (12/12)\n");
+#if !defined(_WIN32)
+    test_import_path_completion();
+    test_context_auto_import();
+#endif
+    printf("All completion and code action tests passed successfully!\n");
     return 0;
 }

@@ -32,7 +32,7 @@ TEST_BIN = $(BUILD)/test_completion$(EXE)
 
 SRCS = src/json.c src/lsp_transport.c src/lsp_document.c src/lsp_analysis.c \
        src/lsp_definition.c src/lsp_hover.c src/lsp_symbols.c src/lsp_symbol_span.c \
-       src/lsp_completion.c \
+       src/lsp_completion.c src/lsp_imports.c \
        src/lsp_code_action.c src/lsp_semantic.c src/lsp_references.c src/lsp_signature.c src/main.c
 
 OBJS = $(addprefix $(BUILD)/,$(notdir $(SRCS:.c=.o)))
@@ -83,7 +83,7 @@ $(BIN): $(OBJS) $(SNOVAC_LIB) | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ $(OBJS) $(SNOVAC_LIB) $(EXTRA_LIBS)
 
 $(TEST_BIN): tests/test_completion.c $(filter-out $(BUILD)/main.o,$(OBJS)) $(SNOVAC_LIB) | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARN) $(INCLUDES) -o $@ tests/test_completion.c $(filter-out $(BUILD)/main.o,$(OBJS)) $(SNOVAC_LIB) $(EXTRA_LIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARN) $(INCLUDES) -DSNOVA_TEST_BUILTIN_DIR=\"$(abspath $(SNOVAC_DIR))/builtin\" -o $@ tests/test_completion.c $(filter-out $(BUILD)/main.o,$(OBJS)) $(SNOVAC_LIB) $(EXTRA_LIBS)
 
 test: $(TEST_BIN)
 	./$(TEST_BIN)

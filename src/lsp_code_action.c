@@ -6,6 +6,7 @@
 #endif
 
 #include "lsp_code_action.h"
+#include "lsp_imports.h"
 #include "json.h"
 
 #include <stdio.h>
@@ -67,49 +68,6 @@ static void actionlist_add(ActionList *list, const char *title, const char *kind
     ai->new_text = strdup(new_text);
 }
 
-static uint32_t find_import_insertion_line(const LspDocument *doc) {
-    if (!doc || !doc->text) return 0;
-    const char *p = doc->text;
-    uint32_t cur_line = 0;
-    uint32_t last_import_line = 0;
-    bool found_import = false;
-    uint32_t package_line = 0;
-    bool found_package = false;
-
-    while (*p) {
-        const char *line_start = p;
-        while (*p && *p != '\n') p++;
-        size_t len = (size_t)(p - line_start);
-        if (*p == '\n') p++;
-
-        char line_buf[512];
-        if (len >= sizeof(line_buf)) len = sizeof(line_buf) - 1;
-        memcpy(line_buf, line_start, len);
-        line_buf[len] = '\0';
-
-        char *trimmed = line_buf;
-        while (*trimmed == ' ' || *trimmed == '\t') trimmed++;
-
-        if (strncmp(trimmed, "package ", 8) == 0) {
-            package_line = cur_line;
-            found_package = true;
-        } else if (strncmp(trimmed, "import ", 7) == 0) {
-            last_import_line = cur_line;
-            found_import = true;
-        }
-
-        cur_line++;
-    }
-
-    if (found_import) {
-        return last_import_line + 1;
-    }
-    if (found_package) {
-        return package_line + 1;
-    }
-    return 0;
-}
-
 static void extract_token_text_at_range(const LspDocument *doc, LspRange range, char *out_buf, size_t out_sz) {
     out_buf[0] = '\0';
     if (!doc || !doc->text) return;
@@ -124,55 +82,75 @@ static void extract_token_text_at_range(const LspDocument *doc, LspRange range, 
     out_buf[len] = '\0';
 }
 
+typedef struct {
+    const char *path;
+    int score;
+    LspPackageOrigin origin;
+} ImportCandidate;
+
+/*
+ * Quick fixes for a symbol that is declared in another package but not
+ * imported. Candidates are ranked by the developer's project context (see
+ * lsp_import_context_score); only the best one is marked preferred, so
+ * "apply preferred fix" picks the package the project already relies on.
+ */
 static void add_auto_import_actions(ActionList *list, const LspDocAnalysis *a, const LspDocument *doc, const char *sym_name) {
     if (!a || !doc || !sym_name || !sym_name[0]) return;
 
-    uint32_t ins_line = find_import_insertion_line(doc);
-    LspRange ins_range = {
-        .start = { .line = ins_line, .character = 0 },
-        .end = { .line = ins_line, .character = 0 }
-    };
+    ImportCandidate found[32];
+    size_t count = 0;
+    const char *iname = sn_intern_cstr((SnInternTable *)&a->intern, sym_name);
 
-    // Search across package scopes in the graph
-    for (SnPackageScopeEntry *pe = a->resolver.packages; pe; pe = pe->next) {
+    for (SnPackageScopeEntry *pe = a->resolver.packages; pe && count < 32; pe = pe->next) {
         if (!pe->package_name || !pe->scope) continue;
-        SnPackageNode *package = sn_pkggraph_find(&a->graph, pe->package_name);
+        SnPackageNode *package = sn_pkggraph_find((SnPackageGraph *)&a->graph, pe->package_name);
         if (!package || !package->name) continue;
         const char *import_path = package->name;
-
-        // Skip current package and already imported
         if (a->unit.package && strcmp(import_path, a->unit.package) == 0) continue;
-        bool already_imported = false;
-        for (size_t i = 0; i < a->unit.imports.len; i++) {
-            const char *imp = SN_LIST_AT(a->unit.imports, const char, i);
-            size_t path_len = strlen(import_path);
-            if (imp && (strcmp(imp, import_path) == 0 ||
-                    (strlen(imp) > path_len &&
-                     strncmp(imp, import_path, path_len) == 0 && imp[path_len] == '.'))) {
-                already_imported = true;
-                break;
-            }
-        }
-        if (already_imported) continue;
+        if (lsp_import_present(a, import_path)) continue;
 
-        const char *iname = sn_intern_cstr((SnInternTable *)&a->intern, sym_name);
         SnSymbol *sym = sn_scope_lookup_local(pe->scope, iname);
-        if (sym && (sym->kind == SN_SYM_TYPE || sym->kind == SN_SYM_FUNC || sym->kind == SN_SYM_CONST || sym->kind == SN_SYM_VARIANT)) {
-            if (sym->decl && sym->decl->vis != SN_VIS_PUBLIC && sym->decl->vis != SN_VIS_DEFAULT) continue;
-            size_t path_len = strlen(import_path);
-            char *title = (char *)malloc(path_len + sizeof("Import ''"));
-            char *new_text = (char *)malloc(path_len + sizeof("import ;\n"));
-            if (!title || !new_text) {
-                free(title);
-                free(new_text);
-                continue;
-            }
-            snprintf(title, path_len + sizeof("Import ''"), "Import '%s'", import_path);
-            snprintf(new_text, path_len + sizeof("import ;\n"), "import %s;\n", import_path);
-            actionlist_add(list, title, "quickfix", true, doc->uri, ins_range, new_text);
-            free(title);
-            free(new_text);
+        if (!sym) continue;
+        if (sym->kind != SN_SYM_TYPE && sym->kind != SN_SYM_FUNC &&
+            sym->kind != SN_SYM_CONST && sym->kind != SN_SYM_VARIANT) continue;
+        if (sym->decl && sym->decl->vis != SN_VIS_PUBLIC && sym->decl->vis != SN_VIS_DEFAULT) continue;
+
+        bool duplicate = false;
+        for (size_t i = 0; i < count; i++) {
+            if (strcmp(found[i].path, import_path) == 0) duplicate = true;
         }
+        if (duplicate) continue;
+        found[count].path = import_path;
+        found[count].score = lsp_import_context_score(a, import_path);
+        found[count].origin = lsp_package_origin(package);
+        count++;
+    }
+
+    /* Highest context score first; ties keep the shorter, then alphabetical path. */
+    for (size_t i = 1; i < count; i++) {
+        ImportCandidate key = found[i];
+        size_t j = i;
+        while (j > 0) {
+            const ImportCandidate *prev = &found[j - 1];
+            bool before = key.score > prev->score ||
+                (key.score == prev->score && (strlen(key.path) < strlen(prev->path) ||
+                 (strlen(key.path) == strlen(prev->path) && strcmp(key.path, prev->path) < 0)));
+            if (!before) break;
+            found[j] = found[j - 1];
+            j--;
+        }
+        found[j] = key;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        LspImportEdit edit;
+        if (!lsp_import_edit(doc, found[i].path, &edit)) continue;
+        const char *where = found[i].origin == LSP_PKG_PROJECT ? "project" :
+                            found[i].origin == LSP_PKG_DEPENDENCY ? "dependency" : "builtin";
+        char title[SNOVAC_PATH_MAX + 64];
+        snprintf(title, sizeof(title), "Import '%s' (%s)", found[i].path, where);
+        LspRange range = { .start = edit.pos, .end = edit.pos };
+        actionlist_add(list, title, "quickfix", i == 0, doc->uri, range, edit.text);
     }
 }
 

@@ -9,6 +9,7 @@
  * Candidate gathering still uses the C snovac analysis bridge. */
 
 #include "lsp_completion.h"
+#include "lsp_imports.h"
 #include "lsp_analysis.h"
 #include "json.h"
 
@@ -78,7 +79,17 @@ static void complist_add(CompList *list, const char *label, LspCompletionKind ki
                          int insert_format, const char *additional_import,
                          int base_score, int type_bonus) {
     if (!list || !label || !label[0]) return;
-    if (complist_has_label(list, label)) return;
+    if (additional_import) {
+        /* One auto-import variant per package. A symbol already in scope
+         * (an item without an import) wins over every variant. */
+        for (size_t i = 0; i < list->len; i++) {
+            const CompItem *e = &list->items[i];
+            if (!e->label || strcmp(e->label, label) != 0) continue;
+            if (!e->additional_import || strcmp(e->additional_import, additional_import) == 0) return;
+        }
+    } else if (complist_has_label(list, label)) {
+        return;
+    }
 
     if (list->len >= list->cap) {
         list->cap *= 2;
@@ -298,6 +309,15 @@ static void extract_line_info(const char *doc_text, uint32_t target_line, uint32
 
     size_t prec = start;
     while (prec > 0 && (line_buf[prec - 1] == ' ' || line_buf[prec - 1] == '\t')) prec--;
+
+    /* `import builtin.io.` is a package path, not member access. */
+    const char *import_trimmed = line_buf;
+    while (*import_trimmed == ' ' || *import_trimmed == '\t') import_trimmed++;
+    if (strncmp(import_trimmed, "import ", 7) == 0 || strncmp(import_trimmed, "import\t", 7) == 0 ||
+        strncmp(import_trimmed, "using ", 6) == 0) {
+        *out_ctx = CTX_IMPORT_LINE;
+        return;
+    }
 
     if (prec > 0 && line_buf[prec - 1] == '.') {
         *out_ctx = CTX_MEMBER;
@@ -841,7 +861,8 @@ static SnScope *completion_import_scope(const LspDocAnalysis *a, const char *imp
     snprintf(prefix, sizeof(prefix), "%s", imp);
     for (char *p = strrchr(prefix, '.'); p; p = strrchr(prefix, '.')) {
         *p = '\0';
-        scope = sn_resolver_package_scope(&a->resolver, prefix);
+        /* Scopes are keyed by interned pointers, not string contents. */
+        scope = sn_resolver_package_scope(&a->resolver, sn_intern_cstr((SnInternTable *)&a->intern, prefix));
         if (scope) return scope;
     }
     return NULL;
@@ -870,38 +891,25 @@ static const char *completion_import_path(const LspDocAnalysis *a,
     return node ? node->name : NULL;
 }
 
-/* Return the end of the package declaration line. Imports are inserted at
- * this point so the existing blank line and import formatting remain intact. */
-static uint32_t package_line_end(const LspDocument *doc, const char *package_name,
-                                 const char **newline) {
-    if (!doc || !package_name) return UINT32_MAX;
-    const char *text = doc->text;
-    size_t offset = 0;
-    while (offset <= doc->text_len) {
-        size_t line_start = offset;
-        while (offset < doc->text_len && text[offset] != '\n' && text[offset] != '\r') offset++;
-        size_t line_end = offset;
-        while (line_start < line_end && (text[line_start] == ' ' || text[line_start] == '\t')) line_start++;
-        size_t package_len = strlen(package_name);
-        if (line_end - line_start >= 8 + package_len &&
-            strncmp(text + line_start, "package", 7) == 0 &&
-            (text[line_start + 7] == ' ' || text[line_start + 7] == '\t') &&
-            strncmp(text + line_start + 8, package_name, package_len) == 0) {
-            size_t after_name = line_start + 8 + package_len;
-            if (after_name == line_end || text[after_name] == ' ' || text[after_name] == '\t' ||
-                text[after_name] == ';') {
-                if (newline) *newline = "\n";
-                if (offset < doc->text_len && text[offset] == '\r') {
-                    if (newline) *newline = "\r\n";
-                }
-                return (uint32_t)offset;
-            }
-        }
-        if (offset >= doc->text_len) break;
-        if (text[offset] == '\r' && offset + 1 < doc->text_len && text[offset + 1] == '\n') offset++;
-        offset++;
+/* Package to import so `Type.member` resolves, or NULL when the type is
+ * already visible (same package, imported, or prelude). */
+static const char *static_receiver_import(const LspDocAnalysis *a, const SnDecl *type_decl) {
+    if (!a || !type_decl || !type_decl->name) return NULL;
+    const char *iname = sn_intern_cstr((SnInternTable *)&a->intern, type_decl->name);
+    if (a->resolver.prelude_scope) {
+        SnSymbol *pre = sn_scope_lookup_local(a->resolver.prelude_scope, iname);
+        if (pre && pre->decl == type_decl) return NULL;
     }
-    return UINT32_MAX;
+    for (SnPackageScopeEntry *pe = a->resolver.packages; pe; pe = pe->next) {
+        if (!pe->package_name || !pe->scope) continue;
+        SnSymbol *sym = sn_scope_lookup_local(pe->scope, iname);
+        if (!sym || sym->decl != type_decl) continue;
+        if (a->unit.package && strcmp(pe->package_name, a->unit.package) == 0) return NULL;
+        const char *path = completion_import_path(a, pe);
+        if (!path || import_covers_package(a, path)) return NULL;
+        return path;
+    }
+    return NULL;
 }
 
 /* ── Member Completion on Inferred Type ───────────────────────────────────── */
@@ -953,12 +961,12 @@ static void add_members_for_typerep(CompList *list, const LspDocAnalysis *a, con
 static int import_names_console(const LspDocAnalysis *a) {
     size_t i;
     if (!a) return 0;
-    if (import_covers_package(a, "builtin.console")) return 1;
+    if (import_covers_package(a, "builtin.io.console.output") || import_covers_package(a, "builtin.console")) return 1;
     for (i = 0; i < a->unit.imports.len; i++) {
         const char *imp = SN_LIST_AT(a->unit.imports, const char, i);
         size_t n;
         if (!imp) continue;
-        if (strcmp(imp, "Console") == 0 || strcmp(imp, "builtin.console.Console") == 0) return 1;
+        if (strcmp(imp, "Console") == 0 || strcmp(imp, "builtin.io.console.output") == 0) return 1;
         n = strlen(imp);
         if (n >= 8 && strcmp(imp + n - 8, ".Console") == 0) return 1;
     }
@@ -989,6 +997,148 @@ static void add_console_members(CompList *list, bool has_following_paren, const 
 }
 
 /* ── Main Completion Handler ─────────────────────────────────────────────── */
+
+/* ── Import Path Completion ───────────────────────────────────────────────── */
+
+/* Dotted path typed after `import` up to the cursor, or false when the line
+ * holds something other than a package path there. */
+static bool typed_import_path(const char *line, uint32_t col, char *out, size_t out_sz) {
+    size_t len = strlen(line);
+    if (col > len) col = (uint32_t)len;
+    const char *p = line;
+    while (*p == ' ' || *p == '\t') p++;
+    if (strncmp(p, "import", 6) == 0) p += 6;
+    else if (strncmp(p, "using", 5) == 0) p += 5;
+    else return false;
+    if (*p != ' ' && *p != '\t') return false;
+    while (*p == ' ' || *p == '\t') p++;
+    size_t start = (size_t)(p - line);
+    if (start > col) return false;
+    size_t n = col - start;
+    if (n >= out_sz) return false;
+    for (size_t i = 0; i < n; i++) {
+        char c = line[start + i];
+        if (!isalnum((unsigned char)c) && c != '_' && c != '.') return false;
+    }
+    memcpy(out, line + start, n);
+    out[n] = '\0';
+    return true;
+}
+
+/* Public type names of a package, for the completion documentation. */
+static void package_types_doc(const LspDocAnalysis *a, const char *package, char *out, size_t out_sz) {
+    out[0] = '\0';
+    SnScope *scope = sn_resolver_package_scope((SnResolver *)&a->resolver,
+                                               sn_intern_cstr((SnInternTable *)&a->intern, package));
+    if (!scope) return;
+    size_t used = (size_t)snprintf(out, out_sz, "`%s`", package);
+    int shown = 0;
+    for (size_t b = 0; b < scope->nbuckets && used < out_sz; b++) {
+        for (SnSymbol *sym = scope->buckets[b]; sym && used < out_sz; sym = sym->next) {
+            if (!sym->name || sym->kind != SN_SYM_TYPE) continue;
+            if (sym->decl && sym->decl->vis != SN_VIS_PUBLIC && sym->decl->vis != SN_VIS_DEFAULT) continue;
+            if (shown == 12) {
+                used += (size_t)snprintf(out + used, out_sz - used, ", …");
+                return;
+            }
+            used += (size_t)snprintf(out + used, out_sz - used, shown ? ", %s" : "\n\nTypes: %s", sym->name);
+            shown++;
+        }
+    }
+}
+
+/*
+ * Completes `import a.b.|` one segment at a time from the package graph:
+ * builtins, the developer's project packages and .snovalang/deps. A segment
+ * that ends a package is a Module item; one that only leads deeper is a
+ * Folder item. Once the typed path is a whole package, its public symbols
+ * follow too (`import pkg.Type`). Ranking uses the project's import habits.
+ */
+static void add_import_path_items(CompList *list, const LspDocAnalysis *a, const char *typed) {
+    if (!a) return;
+    const char *dot = strrchr(typed, '.');
+    size_t done_len = dot ? (size_t)(dot - typed) + 1 : 0; /* includes the trailing '.' */
+    const char *current = a->unit.package;
+
+    for (SnPackageNode *pn = a->graph.nodes; pn; pn = pn->next) {
+        const char *name = pn->name;
+        if (!name || !name[0]) continue;
+        if (current && strcmp(name, current) == 0) continue;
+        if (done_len && (strncmp(name, typed, done_len) != 0)) continue;
+
+        const char *rest = name + done_len;
+        const char *seg_end = strchr(rest, '.');
+        size_t seg_len = seg_end ? (size_t)(seg_end - rest) : strlen(rest);
+        if (seg_len == 0) continue;
+        char segment[256];
+        if (seg_len >= sizeof(segment)) continue;
+        memcpy(segment, rest, seg_len);
+        segment[seg_len] = '\0';
+
+        bool ends_package = seg_end == NULL;
+        int context = lsp_import_context_score(a, name);
+        bool imported = lsp_import_present(a, name);
+        int score = 60 + context / 2 - (imported ? 25 : 0);
+
+        char detail[SNOVAC_PATH_MAX + 32];
+        char doc[1024] = "";
+        if (ends_package) {
+            snprintf(detail, sizeof(detail), "%s%s", name, imported ? " (imported)" : "");
+            package_types_doc(a, name, doc, sizeof(doc));
+        } else {
+            snprintf(detail, sizeof(detail), "%.*s%s.*", (int)done_len, typed, segment);
+        }
+
+        /* Several packages share a leading segment: keep one item, as a
+         * Module when any package ends here, with the best score. */
+        CompItem *existing = NULL;
+        for (size_t i = 0; i < list->len; i++) {
+            if (strcmp(list->items[i].label, segment) == 0) { existing = &list->items[i]; break; }
+        }
+        if (existing) {
+            if (score > existing->base_score) existing->base_score = score;
+            if (ends_package && existing->kind != LSP_COMPLETION_MODULE) {
+                existing->kind = LSP_COMPLETION_MODULE;
+                free(existing->detail);
+                existing->detail = strdup(detail);
+                free(existing->doc);
+                existing->doc = doc[0] ? strdup(doc) : NULL;
+            }
+            continue;
+        }
+        complist_add(list, segment, ends_package ? LSP_COMPLETION_MODULE : LSP_COMPLETION_FOLDER,
+                     detail, doc[0] ? doc : NULL, segment, 1, NULL, score, 0);
+    }
+
+    /* `import pkg.` where pkg is a whole package: offer `pkg.Symbol`. */
+    if (done_len > 1) {
+        char package[SNOVAC_PATH_MAX];
+        if (done_len - 1 >= sizeof(package)) return;
+        memcpy(package, typed, done_len - 1);
+        package[done_len - 1] = '\0';
+        /* Package scopes are keyed by interned name pointers. */
+        const char *interned = sn_intern_cstr((SnInternTable *)&a->intern, package);
+        SnScope *scope = sn_resolver_package_scope((SnResolver *)&a->resolver, interned);
+        if (!scope) return;
+        for (size_t b = 0; b < scope->nbuckets; b++) {
+            for (SnSymbol *sym = scope->buckets[b]; sym; sym = sym->next) {
+                if (!sym->name || !sym->name[0]) continue;
+                if (sym->decl && sym->decl->vis != SN_VIS_PUBLIC && sym->decl->vis != SN_VIS_DEFAULT) continue;
+                LspCompletionKind kind;
+                switch (sym->kind) {
+                    case SN_SYM_TYPE: kind = LSP_COMPLETION_CLASS; break;
+                    case SN_SYM_FUNC: kind = LSP_COMPLETION_FUNCTION; break;
+                    case SN_SYM_CONST: kind = LSP_COMPLETION_CONSTANT; break;
+                    default: continue;
+                }
+                char detail[SNOVAC_PATH_MAX + 32];
+                snprintf(detail, sizeof(detail), "%s.%s", package, sym->name);
+                complist_add(list, sym->name, kind, detail, NULL, sym->name, 1, NULL,
+                             sym->kind == SN_SYM_TYPE ? 55 : 45, 0);
+            }
+        }
+    }
+}
 
 char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const LspDocument *doc, LspPosition pos) {
     if (!doc) return NULL;
@@ -1063,8 +1213,16 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
             if (!found_receiver) {
                 for (SnTypeScopeEntry *te = a->resolver.type_scopes; te; te = te->next) {
                     if (te->type_decl && te->type_decl->name && strcmp(te->type_decl->name, receiver_buf) == 0) {
+                        size_t first_new = list.len;
                         add_scope_symbols(&list, te->member_scope, CTX_MEMBER, 90, has_following_paren);
                         found_receiver = true;
+                        /* `Console.` with Console not imported: picking a
+                         * member also imports the type's package. */
+                        const char *owner = static_receiver_import(a, te->type_decl);
+                        for (size_t i = first_new; owner && i < list.len; i++) {
+                            if (!list.items[i].additional_import) list.items[i].additional_import = strdup(owner);
+                        }
+                        if (owner) break;
                     }
                 }
             }
@@ -1079,12 +1237,17 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
             }
 
             if (strcmp(receiver_buf, "Console") == 0 && !complist_has_label(&list, "println")) {
-                const char *needed = (a && import_names_console(a)) ? NULL : "builtin.console.Console";
+                const char *needed = (a && import_names_console(a)) ? NULL : "builtin.io.console.output";
                 add_console_members(&list, has_following_paren, needed);
             }
         }
+    } else if (ctx == CTX_IMPORT_LINE) {
+        char typed[SNOVAC_PATH_MAX];
+        if (typed_import_path(line_buf, pos.character, typed, sizeof(typed))) {
+            add_import_path_items(&list, a, typed);
+        }
     } else {
-        // Non-member (General, Type, Decorator, Import) Completion
+        // Non-member (General, Type, Decorator) Completion
 
         // 1. Semantic Local Variables & Parameters (highest priority 95 / 90)
         if (local_scope && ctx != CTX_DECORATOR && ctx != CTX_IMPORT_LINE) {
@@ -1148,8 +1311,10 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
                 add_scope_symbols(&list, a->resolver.prelude_scope, ctx, 70, has_following_paren);
             }
 
-            // Cross-package symbols from all dependency / workspace packages
-            for (SnPackageScopeEntry *pe = a->resolver.packages; pe; pe = pe->next) {
+            // Cross-package symbols: auto-import candidates. Only offered
+            // once a prefix is typed, so the list stays relevant, and ranked
+            // by how the developer's project already uses each package.
+            for (SnPackageScopeEntry *pe = prefix_buf[0] ? a->resolver.packages : NULL; pe; pe = pe->next) {
                 if (!pe->package_name || !pe->scope) continue;
                 const char *import_path = completion_import_path(a, pe);
                 if (!import_path) continue;
@@ -1157,11 +1322,13 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
 
                 bool in_imports = import_covers_package(a, import_path);
                 if (in_imports) continue;
+                int context = lsp_import_context_score(a, import_path);
 
                 for (size_t b = 0; b < pe->scope->nbuckets; b++) {
                     for (SnSymbol *sym = pe->scope->buckets[b]; sym; sym = sym->next) {
                         if (!sym->name || !sym->name[0]) continue;
                         if (sym->decl && sym->decl->vis != SN_VIS_PUBLIC && sym->decl->vis != SN_VIS_DEFAULT) continue;
+                        if (compute_match_bonus(sym->name, prefix_buf) < 0) continue;
 
                         LspCompletionKind kind = LSP_COMPLETION_VARIABLE;
                         const char *kind_str = "symbol";
@@ -1196,7 +1363,7 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
                         if (ctx == CTX_TYPE_POS && sym->kind != SN_SYM_TYPE) continue;
 
                         char detail[512];
-                        snprintf(detail, sizeof(detail), "%s %s (from %s)", kind_str, sym->name, import_path);
+                        snprintf(detail, sizeof(detail), "%s %s · auto-import %s", kind_str, sym->name, import_path);
 
                         char insert_text[256];
                         int insert_fmt = 1;
@@ -1207,10 +1374,8 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
                             snprintf(insert_text, sizeof(insert_text), "%s", sym->name);
                         }
 
-                        int score = (ctx == CTX_TYPE_POS) ? 90 : 65;
-                        const char *needed_import = (ctx == CTX_IMPORT_LINE ||
-                                                     import_covers_package(a, import_path))
-                            ? NULL : import_path;
+                        int score = ((ctx == CTX_TYPE_POS) ? 72 : 52) + context / 3;
+                        const char *needed_import = import_path;
                         complist_add(&list, sym->name, kind, detail, import_path,
                                      insert_text, insert_fmt, needed_import, score, type_bonus);
                     }
@@ -1245,11 +1410,6 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
 
     uint32_t start_col = pos.character >= (uint32_t)strlen(prefix_buf) ? pos.character - (uint32_t)strlen(prefix_buf) : 0;
     uint32_t end_col = pos.character;
-    const char *package_name = (a && a->unit.package && a->unit.package[0]) ? a->unit.package : NULL;
-    const char *import_newline = "\n";
-    uint32_t package_end = package_line_end(doc, package_name, &import_newline);
-    LspPosition import_pos = {0, 0};
-    if (package_end != UINT32_MAX) import_pos = lsp_offset_to_pos(doc, package_end);
 
     for (size_t i = 0; i < list.len; i++) {
         const CompItem *ci = &list.items[i];
@@ -1295,15 +1455,8 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
         jb_kv_str(&jb, "newText", ci->insert_text ? ci->insert_text : ci->label);
         jb_end_obj(&jb);
 
-        if (ci->additional_import) {
-            LspPosition edit_pos = import_pos;
-            const char *lead = import_newline;
-            char import_text[SNOVAC_PATH_MAX + 32];
-            if (package_end == UINT32_MAX) {
-                edit_pos.line = 0;
-                edit_pos.character = 0;
-                lead = "";
-            }
+        LspImportEdit import_edit;
+        if (ci->additional_import && lsp_import_edit(doc, ci->additional_import, &import_edit)) {
             jb_key(&jb, "additionalTextEdits");
             jb_start_arr(&jb);
             jb_start_obj(&jb);
@@ -1311,19 +1464,16 @@ char *lsp_completion_query(LspAnalysisEngine *engine, LspDocStore *store, const 
             jb_start_obj(&jb);
             jb_key(&jb, "start");
             jb_start_obj(&jb);
-            jb_kv_int(&jb, "line", edit_pos.line);
-            jb_kv_int(&jb, "character", edit_pos.character);
+            jb_kv_int(&jb, "line", import_edit.pos.line);
+            jb_kv_int(&jb, "character", import_edit.pos.character);
             jb_end_obj(&jb);
             jb_key(&jb, "end");
             jb_start_obj(&jb);
-            jb_kv_int(&jb, "line", edit_pos.line);
-            jb_kv_int(&jb, "character", edit_pos.character);
+            jb_kv_int(&jb, "line", import_edit.pos.line);
+            jb_kv_int(&jb, "character", import_edit.pos.character);
             jb_end_obj(&jb);
             jb_end_obj(&jb);
-
-            snprintf(import_text, sizeof(import_text), "%simport %s%s",
-                     lead, ci->additional_import, import_newline);
-            jb_kv_str(&jb, "newText", import_text);
+            jb_kv_str(&jb, "newText", import_edit.text);
             jb_end_obj(&jb);
             jb_end_arr(&jb);
         }

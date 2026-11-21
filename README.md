@@ -12,6 +12,8 @@ IDE-agnostic Language Server Protocol (LSP) server for Snovalang based on the `s
 - **Semantic Highlighting**: Token highlighting, including expressions embedded in interpolated strings.
 - **Pulsar completions**: Templates for `pulsar func` and `pulsar method`, with async stream-aware signatures.
 - **Package imports**: Resolves package and qualified-symbol imports for completion and navigation.
+- **Import path completion**: `import builtin.` completes one segment at a time from the package graph (compiler builtins, project packages and `.snovalang/deps`). A segment that ends a package is a module item whose documentation lists its types; `import pkg.` also offers the package's public symbols for `import pkg.Symbol`.
+- **Context-aware auto-import**: completing a symbol from a package the file does not import adds the import, sorted into the existing import block with the block's semicolon style. When several packages declare the same name, each appears with its package, ranked by the project: its own packages first, then packages other project files already import (more when a file of the same package does), then dependencies and builtins. `Type.member` on a type whose package is not imported adds that import too. The "not imported" quick fix uses the same ranking and marks only the best package as preferred.
 
 ## Snovalang (`.snl`) migration
 
@@ -51,7 +53,7 @@ the compiler source from [`snovalang/snovac`](https://github.com/snovalang/snova
 
 Snovalang sources use the `.snl` extension. Snovalang scripts use `.sns`. The server indexes and analyzes only those two extensions. `.snova`, `.java`, and every other extension are ignored.
 
-The project manifest is `mod.sns` (or `snova.sns`), not `mod.sno`. Document symbols keep each `selectionRange` inside its `range`, including fields and functions nested in a struct. Completion covers names in the open `.snl` or `.sns` file, members such as `Console.println`, and an autoimport edit for a symbol defined in another project file.
+The project manifest is `mod.sns` (or `snova.sns`), not `mod.sno`. Document symbols keep each `selectionRange` inside its `range`, including fields and functions nested in a struct. Completion covers names in the open `.snl` or `.sns` file, members such as `Console.println`, and an auto-import edit for a symbol defined in another package. Builtins are found through `SNOVA_BUILTIN_DIR`, `~/.snovalang/std/src` (written by `make install`), or a `builtin` directory next to the `snova-lsp` executable, which is how the editor extensions ship them.
 
 ## Docstring Support
 The LSP server automatically parses documentation formatted as:
