@@ -378,7 +378,7 @@ static void extract_line_info(const char *doc_text, uint32_t target_line, uint32
 
 static void format_typerep_string(const SnTypeRep *ty, char *out, size_t out_sz) {
     if (!ty) {
-        snprintf(out, out_sz, "any");
+        snprintf(out, out_sz, "unknown");
         return;
     }
     switch (ty->tag) {
@@ -392,10 +392,10 @@ static void format_typerep_string(const SnTypeRep *ty, char *out, size_t out_sz)
         case SN_T_BYTE: snprintf(out, out_sz, "byte"); break;
         case SN_T_CHAR: snprintf(out, out_sz, "char"); break;
         case SN_T_STRING: snprintf(out, out_sz, "string"); break;
-        case SN_T_ANY: snprintf(out, out_sz, "any"); break;
-        case SN_T_ERROR: snprintf(out, out_sz, "any"); break;
+        case SN_T_ANY: snprintf(out, out_sz, "unknown"); break;
+        case SN_T_ERROR: snprintf(out, out_sz, "unknown"); break;
         case SN_T_ARRAY: {
-            char elem_str[128] = "any";
+            char elem_str[128] = "unknown";
             if (ty->nargs > 0 && ty->args && ty->args[0]) {
                 format_typerep_string(ty->args[0], elem_str, sizeof(elem_str));
             }
@@ -413,6 +413,8 @@ static void format_typerep_string(const SnTypeRep *ty, char *out, size_t out_sz)
                     strcat(args_buf, a_str);
                 }
                 snprintf(out, out_sz, "%s<%s>", name, args_buf);
+            } else if (strcmp(name, "Option") == 0) {
+                snprintf(out, out_sz, "?");
             } else {
                 snprintf(out, out_sz, "%s", name);
             }
@@ -437,16 +439,17 @@ static void format_typerep_string(const SnTypeRep *ty, char *out, size_t out_sz)
             break;
         }
         default:
-            snprintf(out, out_sz, "any");
+            snprintf(out, out_sz, "unknown");
             break;
     }
 }
 
 static void format_source_type(const SnType *type, char *out, size_t out_sz) {
     if (!type) {
-        snprintf(out, out_sz, "any");
+        snprintf(out, out_sz, "unknown");
     } else if (type->kind == SN_TYPE_NAME) {
-        snprintf(out, out_sz, "%s%s", type->name ? type->name : "any",
+        const char *name = type->name ? type->name : "unknown";
+        snprintf(out, out_sz, "%s%s", strcmp(name, "any") == 0 ? "unknown" : name,
                  type->is_optional ? "?" : "");
     } else if (type->kind == SN_TYPE_FUNC) {
         size_t used = (size_t)snprintf(out, out_sz, "(");
@@ -478,7 +481,7 @@ static void format_decl_callable_detail(const SnDecl *decl, const char *kind,
                                    decl->name ? decl->name : "");
     for (size_t i = 0; i < decl->params.len && used < out_sz; i++) {
         const SnParam *param = SN_LIST_AT(decl->params, const SnParam, i);
-        char type[96] = "any";
+        char type[96] = "unknown";
         if (param && param->type) format_source_type(param->type, type, sizeof(type));
         if (i) used += (size_t)snprintf(out + used, out_sz - used, ", ");
         used += (size_t)snprintf(out + used, out_sz - used, "%s: %s",
@@ -723,7 +726,7 @@ static void add_decl_member_symbols(CompList *list, const SnDecl *type_decl, boo
                 used += (size_t)snprintf(detail + used, sizeof(detail) - used, "%s: %s",
                                          param && param->name ? param->name : "_",
                                          param && param->type && param->type->name
-                                             ? param->type->name : "any");
+                                             ? param->type->name : "unknown");
             }
             if (used < sizeof(detail)) snprintf(detail + used, sizeof(detail) - used, ")");
             if (!has_following_paren) {
