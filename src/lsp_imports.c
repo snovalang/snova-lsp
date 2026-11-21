@@ -125,18 +125,36 @@ static bool line_is_blank_or_comment(const char *s, size_t len) {
     return len == 0 || (len >= 2 && s[0] == '/' && (s[1] == '/' || s[1] == '*')) || s[0] == '*';
 }
 
+typedef struct {
+    uint32_t line;
+    size_t end;
+    bool has_newline;
+    int group; /* blank lines split the block into groups */
+    char name[SNOVAC_PATH_MAX];
+} ImportLine;
+
+/*
+ * Group choice follows golang.org/x/tools/go/ast/astutil.AddNamedImport: the
+ * new import joins the group holding the import with the longest shared
+ * path prefix (in dotted segments), sorted inside it. Without any shared
+ * prefix a `builtin.` path joins the builtin group and anything else the
+ * last group, mirroring goimports' standard-library-first split. A file with
+ * one group therefore keeps plain alphabetical order.
+ */
 bool lsp_import_edit(const LspDocument *doc, const char *path, LspImportEdit *out) {
     if (!doc || !path || !path[0] || !out) return false;
     const char *nl = (doc->text && memchr(doc->text, '\r', doc->text_len)) ? "\r\n" : "\n";
 
     uint32_t line_no = 0;
-    bool have_package = false, have_import = false;
-    uint32_t package_line = 0, last_import_line = 0;
-    bool package_has_nl = true, last_import_has_nl = true;
-    size_t package_end = 0, last_import_end = 0;
-    bool insert_before_found = false;
-    uint32_t insert_before = 0;
+    bool have_package = false;
+    uint32_t package_line = 0;
+    bool package_has_nl = true;
+    size_t package_end = 0;
     int with_semicolon = 0, without_semicolon = 0;
+    ImportLine imports[256];
+    size_t n = 0;
+    int group = 0;
+    bool blank_since_import = false;
 
     size_t offset = 0;
     Line line;
@@ -152,31 +170,54 @@ bool lsp_import_edit(const LspDocument *doc, const char *path, LspImportEdit *ou
                 package_has_nl = line.has_newline;
             }
         } else if (import_name(s, len, name, sizeof(name))) {
-            have_import = true;
-            last_import_line = line_no;
-            last_import_end = line.end;
-            last_import_has_nl = line.has_newline;
-            if (memchr(s, ';', len)) with_semicolon++; else without_semicolon++;
-            if (!insert_before_found && strcmp(name, path) > 0) {
-                insert_before_found = true;
-                insert_before = line_no;
+            if (n > 0 && blank_since_import) group++;
+            blank_since_import = false;
+            if (n < sizeof(imports) / sizeof(imports[0])) {
+                imports[n].line = line_no;
+                imports[n].end = line.end;
+                imports[n].has_newline = line.has_newline;
+                imports[n].group = group;
+                snprintf(imports[n].name, sizeof(imports[n].name), "%s", name);
+                n++;
             }
+            if (memchr(s, ';', len)) with_semicolon++; else without_semicolon++;
         } else if (!line_is_blank_or_comment(s, len)) {
             break; /* first declaration: the import block is over */
+        } else if (n > 0) {
+            blank_since_import = true;
         }
         line_no++;
     }
 
     const char *semi = with_semicolon > without_semicolon ? ";" : "";
-    if (have_import) {
-        if (insert_before_found) {
-            out->pos = (LspPosition){ insert_before, 0 };
+    if (n > 0) {
+        int target = -1, best_shared = 0;
+        for (size_t i = 0; i < n; i++) {
+            int shared = shared_segments(imports[i].name, path);
+            if (shared > best_shared) { best_shared = shared; target = imports[i].group; }
+        }
+        if (target < 0) {
+            target = imports[n - 1].group;
+            if (strncmp(path, "builtin.", 8) == 0) {
+                for (size_t i = 0; i < n; i++) {
+                    if (strncmp(imports[i].name, "builtin.", 8) == 0) { target = imports[i].group; break; }
+                }
+            }
+        }
+        const ImportLine *before = NULL, *last = NULL;
+        for (size_t i = 0; i < n; i++) {
+            if (imports[i].group != target) continue;
+            last = &imports[i];
+            if (!before && strcmp(imports[i].name, path) > 0) before = &imports[i];
+        }
+        if (before) {
+            out->pos = (LspPosition){ before->line, 0 };
             snprintf(out->text, sizeof(out->text), "import %s%s%s", path, semi, nl);
-        } else if (last_import_has_nl) {
-            out->pos = (LspPosition){ last_import_line + 1, 0 };
+        } else if (last->has_newline) {
+            out->pos = (LspPosition){ last->line + 1, 0 };
             snprintf(out->text, sizeof(out->text), "import %s%s%s", path, semi, nl);
         } else {
-            out->pos = lsp_offset_to_pos(doc, (uint32_t)last_import_end);
+            out->pos = lsp_offset_to_pos(doc, (uint32_t)last->end);
             snprintf(out->text, sizeof(out->text), "%simport %s%s", nl, path, semi);
         }
         return true;

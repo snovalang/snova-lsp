@@ -415,7 +415,13 @@ LspDocAnalysis *lsp_engine_analyze_document(LspAnalysisEngine *engine, LspDocSto
     const char *source_for_builtin = (proj.has_manifest && proj.source_root[0]) ? proj.source_root :
                                      ((ws_proj.has_manifest && ws_proj.source_root[0]) ? ws_proj.source_root : engine->workspace_root);
     char builtin_find[SNOVAC_PATH_MAX];
-    if (source_for_builtin && source_for_builtin[0] && sn_project_find_builtin_root(source_for_builtin, builtin_find, sizeof(builtin_find))) {
+    /* A loose file (no manifest, no workspace root) still needs builtins:
+     * without them Option/Result do not resolve and the checker's quiet
+     * fallback drops their generic arguments. SNOVA_BUILTIN_DIR and the
+     * executable location do not depend on a project root. */
+    const char *builtin_probe = (source_for_builtin && source_for_builtin[0]) ? source_for_builtin :
+                                ((a->path && a->path[0]) ? a->path : ".");
+    if (sn_project_find_builtin_root(builtin_probe, builtin_find, sizeof(builtin_find))) {
         sn_pkggraph_scan_root(&a->graph, builtin_find);
         sn_pkggraph_load_native_manifest(&a->graph, builtin_find);
     }
@@ -549,17 +555,25 @@ static void collect_statements_before_offset(SnChecker *checker, SnScope *scope,
         sn_check_stmt(checker, scope, (SnStmt *)s);
     } else if (s->kind == SN_STMT_FOR) {
         if (s->name) {
-            SnTypeRep *elem_ty = sn_type_any(checker->types);
+            SnTypeRep *elem_ty = NULL;
             if (s->expr) {
                 SnTypeRep *iter_ty = sn_check_expr(checker, scope, s->expr);
                 if (iter_ty && iter_ty->tag == SN_T_ARRAY && iter_ty->nargs >= 1 && iter_ty->args && iter_ty->args[0]) {
                     elem_ty = iter_ty->args[0];
+                } else if (iter_ty && iter_ty->tag == SN_T_NAMED && iter_ty->nargs > 0 &&
+                           iter_ty->decl && iter_ty->decl->name &&
+                           (strcmp(iter_ty->decl->name, "Iterable") == 0 ||
+                            strcmp(iter_ty->decl->name, "Array") == 0 ||
+                            strcmp(iter_ty->decl->name, "List") == 0 ||
+                            strcmp(iter_ty->decl->name, "Channel") == 0)) {
+                    elem_ty = iter_ty->args[iter_ty->nargs - 1];
                 }
             }
+            if (s->type) elem_ty = sn_check_resolve_type(checker, s->type);
             const char *iname = sn_intern_cstr(checker->intern, s->name);
             SnSymbol *sym = sn_scope_define(scope, iname, SN_SYM_LOCAL, NULL, s->span);
             if (sym) {
-                sym->value_type = elem_ty;
+                sym->value_type = elem_ty ? elem_ty : sn_type_error(checker->types);
                 sym->is_mutable = 0;
             }
         }
@@ -583,7 +597,10 @@ static void collect_statements_before_offset(SnChecker *checker, SnScope *scope,
                     const char *iname = sn_intern_cstr(checker->intern, cat->name);
                     SnSymbol *sym = sn_scope_define(scope, iname, SN_SYM_LOCAL, NULL, cat->span);
                     if (sym) {
-                        sym->value_type = sn_type_any(checker->types);
+                        /* The parser does not retain a catch type on the
+                         * catch block. Keep the binding unresolved rather
+                         * than fabricating `any` in LSP results. */
+                        sym->value_type = sn_type_error(checker->types);
                         sym->is_mutable = 0;
                     }
                 }

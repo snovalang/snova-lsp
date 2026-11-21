@@ -46,7 +46,13 @@ static void format_type_repr(const SnType *t, char *buf, size_t buf_sz) {
         return;
     }
     if (t->kind == SN_TYPE_NAME) {
-        snprintf(buf, buf_sz, "%s%s", t->name ? t->name : "unknown", t->is_optional ? "?" : "");
+        if (t->name && strcmp(t->name, "Option") == 0 && t->params.len == 0) {
+            snprintf(buf, buf_sz, "?%s", t->is_optional ? "?" : "");
+        } else {
+            const char *name = t->name ? t->name : "unknown";
+            snprintf(buf, buf_sz, "%s%s", strcmp(name, "any") == 0 ? "unknown" : name,
+                     t->is_optional ? "?" : "");
+        }
     } else if (t->kind == SN_TYPE_FUNC) {
         size_t used = (size_t)snprintf(buf, buf_sz, "(");
         for (size_t i = 0; i < t->params.len && used < buf_sz; i++) {
@@ -66,7 +72,7 @@ static void format_type_repr(const SnType *t, char *buf, size_t buf_sz) {
 }
 
 static void format_resolved_type(const SnTypeRep *t, char *buf, size_t buf_sz) {
-    if (!t) { snprintf(buf, buf_sz, "any"); return; }
+    if (!t) { snprintf(buf, buf_sz, "unknown"); return; }
     switch (t->tag) {
         case SN_T_INT: snprintf(buf, buf_sz, "int"); break;
         case SN_T_LONG: snprintf(buf, buf_sz, "long"); break;
@@ -78,11 +84,12 @@ static void format_resolved_type(const SnTypeRep *t, char *buf, size_t buf_sz) {
         case SN_T_STRING: snprintf(buf, buf_sz, "string"); break;
         case SN_T_CHAR: snprintf(buf, buf_sz, "char"); break;
         case SN_T_UNIT: snprintf(buf, buf_sz, "unit"); break;
-        case SN_T_ANY: snprintf(buf, buf_sz, "any"); break;
+        case SN_T_ANY: snprintf(buf, buf_sz, "unknown"); break;
         case SN_T_TYPEVAR: snprintf(buf, buf_sz, "%s", t->decl && t->decl->name ? t->decl->name : "T"); break;
         case SN_T_NAMED: {
             const char *name = t->decl && t->decl->name ? t->decl->name : "Type";
-            if (t->nargs == 0) snprintf(buf, buf_sz, "%s", name);
+            if (t->nargs == 0 && strcmp(name, "Option") == 0) snprintf(buf, buf_sz, "?");
+            else if (t->nargs == 0) snprintf(buf, buf_sz, "%s", name);
             else {
                 size_t used = (size_t)snprintf(buf, buf_sz, "%s<", name);
                 for (uint32_t i = 0; i < t->nargs && used < buf_sz; i++) {
@@ -114,7 +121,7 @@ static void format_resolved_type(const SnTypeRep *t, char *buf, size_t buf_sz) {
             }
             break;
         }
-        default: snprintf(buf, buf_sz, "any"); break;
+        default: snprintf(buf, buf_sz, "unknown"); break;
     }
 }
 
@@ -173,7 +180,7 @@ static void format_decl_signature(const SnDecl *d, char *out, size_t out_sz) {
             char params[512] = "";
             for (size_t i = 0; i < d->params.len; i++) {
                 const SnParam *p = SN_LIST_AT(d->params, const SnParam, i);
-                char pt[96] = "any";
+                char pt[96] = "unknown";
                 if (p && p->type) format_type_repr(p->type, pt, sizeof(pt));
                 if (i) strncat(params, ", ", sizeof(params) - strlen(params) - 1);
                 char part[128];
@@ -189,7 +196,7 @@ static void format_decl_signature(const SnDecl *d, char *out, size_t out_sz) {
             char params[512] = "";
             for (size_t i = 0; i < d->params.len; i++) {
                 const SnParam *p = SN_LIST_AT(d->params, const SnParam, i);
-                char pt[96] = "any";
+                char pt[96] = "unknown";
                 if (p && p->type) format_type_repr(p->type, pt, sizeof(pt));
                 if (i) strncat(params, ", ", sizeof(params) - strlen(params) - 1);
                 char part[128];
