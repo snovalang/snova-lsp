@@ -489,12 +489,9 @@ static void add_keywords_and_snippets(CompList *list, ComplContext ctx, bool has
         if (!name) continue;
         complist_add(list, name, LSP_COMPLETION_KEYWORD, "type", detail ? detail : "primitive type", name, 1, NULL, type_score, type_bonus);
     }
-    complist_add(list, "List", LSP_COMPLETION_CLASS, "type List<T>", "Dynamic array collection", "List<${1:T}>", 2, NULL, type_score, type_bonus);
-    complist_add(list, "Map", LSP_COMPLETION_CLASS, "type Map<K, V>", "Key-value hash map", "Map<${1:K}, ${2:V}>", 2, NULL, type_score, type_bonus);
-    complist_add(list, "Option", LSP_COMPLETION_ENUM, "enum Option<T>", "Optional value: Some(T) or None", "Option<${1:T}>", 2, NULL, type_score, type_bonus);
-    complist_add(list, "Result", LSP_COMPLETION_ENUM, "enum Result<T, E>", "Result value: Ok(T) or Err(E)", "Result<${1:T}, ${2:Error}>", 2, NULL, type_score, type_bonus);
-    complist_add(list, "Task", LSP_COMPLETION_CLASS, "class Task<T>", "Asynchronous task handle", "Task<${1:T}>", 2, NULL, type_score, type_bonus);
-    complist_add(list, "Array", LSP_COMPLETION_CLASS, "class Array<T>", "Fixed-size or slice array", "Array<${1:T}>", 2, NULL, type_score, type_bonus);
+    /* Named builtin types are added from the compiler's resolved package
+     * graph below. Keeping another list here makes completion/import edits
+     * stale whenever a Snova release moves or renames a builtin. */
 
     if (ctx == CTX_TYPE_POS) {
         return;

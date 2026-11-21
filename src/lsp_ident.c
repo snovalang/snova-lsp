@@ -666,7 +666,11 @@ static bool lookup_package_level(const LspDocAnalysis *a, const char *name, LspS
         s = sn_scope_lookup_local(a->resolver.prelude_scope, iname);
         if (s) {
             const char *p = lsp_symbol_package(a, s);
-            set_global(a, out, s, p ? p : "builtin.core.types.values", name);
+            /* Prelude membership is compiler/version dependent. Resolve its
+             * declaring package from the graph instead of assuming the
+             * current builtin layout; older/newer Snova releases can move a
+             * builtin type between packages. */
+            set_global(a, out, s, p, name);
             return true;
         }
     }
